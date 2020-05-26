@@ -1,6 +1,6 @@
 create or replace PACKAGE const is
 
-  -- Anonymisation_process
+  --- Anonymisation_process
   k_mask_chk_row_sample_size  constant number       := 1001;
   k_mask_chk_col_sample_size  constant number       := 3;
   k_date_mask             constant varchar2(10) := '01/01/2099';
