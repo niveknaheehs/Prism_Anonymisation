@@ -1,0 +1,1 @@
+sqlplus cpenny/PT4_reader@PSMSHRDORA03:1521/PT4 @patch_test_tables_populated.sql

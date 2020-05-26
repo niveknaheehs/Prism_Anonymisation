@@ -1,0 +1,11 @@
+1. open ms-dos and cd to release directory
+2. open SQL*Plus session
+3. @install.sql
+4. Enter value for anon_owner:
+5. Enter value for PASSWORD:
+6. Enter value for INSTANCE:
+7. At the end you are again prmoted for:
+delete_non_existent_tab_cols
+Enter value for src_prism_prefix:
+This is the SRC Database Schema Prefix (e.g. PSM or ANONPRE9401)
+7. A log file is generated in the install directory: install_{anon_owner}.log.  This can be checked for errors.

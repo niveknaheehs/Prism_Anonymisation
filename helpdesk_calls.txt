@@ -1,0 +1,150 @@
+
+
+--F1225863
+--A359,D795,B738,B468,R646,035L,007U,048B,B992,C507,C542,B020,C889,S403,S830,B396,BETA,N07P
+exec export_database('PSM','A359,D795,B738,B468,R646,035L,007U,048B,B992,C507,C542,B020,C889,S403,S830,B396,BETA,N07P','N');
+
+FAO Steve Gray; Steve we require an export of Live data, and import of two copies of the data into PRISMSUP. The company codes are in the script call below as per previous runs of the export script (see ref:F1156395/F1140194 for early runs of the script)
+
+exec export_database('PSM','A359,D795,B738,B468,R646,035L,007U,048B,B992,C507,C542,B020,C889,S403,S830,B396,BETA,N07P','N');
+
+
+
+
+#####################################################################################################
+
+Hi Simon,
+
+All done – export took just over 8 hours, no errors.  Export and export log are in PSMAZDV1$ as requested:
+
+18/08/2016  20:13    28,093,648,896 20160818_SS1N1_018000134.dmp
+18/08/2016  20:13           547,997 20160818_SS1N1_018000134.dmp.log
+
+From log:
+Dump file set for SYSTEM.PRISM_DBA is:
+  /u1/data_pump/20160818_SS1N1_018000134.dmp
+Job "SYSTEM"."PRISM_DBA" successfully completed at Thu Aug 18 20:13:19 2016 elapsed 0 08:06:25
+
+
+Best regards
+
+Steve Gray
+Oracle DBA & Unix Administrator
+Divisional IT Services
+Advanced notification of unavailability
+Mon Aug 22nd - Fri Aug 26th (annual leave), back 0800 Tue Aug 30th
+Mon Sep 5th - Fri Sep 9th (annual leave), back 0800 Mon Sep 12th
+Capita Asset Services
+The Registry, 34 Beckenham Road, Beckenham, Kent, BR3 4TU
+T: +44 (0) 20 37285022 | MVS Ext: 6810022 | M: +44 (0) 7785 454 776
+
+www.capitaassetservices.com
+Please consider the environment before printing this email.
+
+From: Gray, Stephen (Capita Asset Services) 
+Sent: 18 August 2016 12:18
+To: Howe, Simon (Capita Asset Services)
+Subject: RE: F1156395 - Export of Companies from PRISMST
+
+Not fallen over this time, so let’s see how long this takes.
+
+
+
+
+
+
+Best regards
+
+Steve Gray
+Oracle DBA & Unix Administrator
+Divisional IT Services
+Advanced notification of unavailability
+Mon Aug 22nd - Fri Aug 26th (annual leave), back 0800 Tue Aug 30th
+Mon Sep 5th - Fri Sep 9th (annual leave), back 0800 Mon Sep 12th
+Capita Asset Services
+The Registry, 34 Beckenham Road, Beckenham, Kent, BR3 4TU
+T: +44 (0) 20 37285022 | MVS Ext: 6810022 | M: +44 (0) 7785 454 776
+
+www.capitaassetservices.com
+Please consider the environment before printing this email.
+
+From: Gray, Stephen (Capita Asset Services) 
+Sent: 18 August 2016 12:08
+To: Howe, Simon (Capita Asset Services)
+Subject: RE: F1156395 - Export of Companies from PRISMST
+
+Aha, log contains:
+
+$ cat 20160818_SS1N1_018000134.dmp.log
+ORA-39034: Table BIN$NCU/lRDisETgU8CoCYACCQ==$0 does not exist.
+
+And there were 688 SS1N1* items in the recyclebin.  I’ve purged them and now retry, but we might want to either exclude BIN$% items, or purge before exporting.
+
+Running now…
+
+
+
+
+
+
+Best regards
+
+Steve Gray
+Oracle DBA & Unix Administrator
+Divisional IT Services
+Advanced notification of unavailability
+Mon Aug 22nd - Fri Aug 26th (annual leave), back 0800 Tue Aug 30th
+Mon Sep 5th - Fri Sep 9th (annual leave), back 0800 Mon Sep 12th
+Capita Asset Services
+The Registry, 34 Beckenham Road, Beckenham, Kent, BR3 4TU
+T: +44 (0) 20 37285022 | MVS Ext: 6810022 | M: +44 (0) 7785 454 776
+
+www.capitaassetservices.com
+Please consider the environment before printing this email.
+
+From: Howe, Simon (Capita Asset Services) 
+Sent: 18 August 2016 12:04
+To: Gray, Stephen (Capita Asset Services)
+Subject: RE: F1156395 - Export of Companies from PRISMST
+
+Not really sure what is going on here – The code hasn’t changed and worked previously.
+
+The following thread suggests looking at the log file (assuming that one is produced) to get to the real error, as the raised error might be misdirection:
+https://community.oracle.com/thread/945199?start=0&tstart=0
+
+Thanks, Simon
+
+
+From: Gray, Stephen (Capita Asset Services) 
+Sent: 18 August 2016 11:40
+To: Howe, Simon (Capita Asset Services)
+Subject: RE: F1156395 - Export of Companies from PRISMST
+
+Yes I have to attach and kill_job after each failure, but that’s ok.
+
+11:31:07 SYSTEM@PRISMTST > set serveroutput on
+11:37:34 SYSTEM@PRISMTST > exec export_database('SS1N1','CC08,CC07,CC06,CC05,CC04,CC03,CC02,CC01','N');
+#######SCHEMAS#########
+IN ('SS1N1_ACTIVE_BATCH','SS1N1_AUDIT','SS1N1_CASH_MANAGEMENT','SS1N1_CHECKING','SS1N1_CORPORATE','SS1N1_CORRESPONDENCE','SS1N1_CREST','SS1N1_DATA_EXTRACT','SS1N1_IMPORT','SS1N1_INTEGRATION','SS1N1_LOG','SS1N1_PRISM_CAG_DATA','SS1N1_PRISM_CAG_PARAMS','SS1N1_PRISM_CORE','SS1N1_PRISM_DEVART','SS1N1_PRISM_FATCA','SS1N1_PRISM_GATEWAY','SS1N1_PRISM_SSIS','SS1N1_PRISM_UTILITIES','SS1N1_REPORTING','SS1N1_TTPARM','SS1N1_USER_ACCESS')
+#######PARTITIONS#########
+NULL_COMP_CODE,P_CC08,P_CC07,P_CC06,P_CC05,P_CC04,P_CC03,P_CC02,P_CC01
+#######VERSION_STMT#########
+select replace(db_version,'_','') from SS1N1_PRISM_CORE.PRISM_DATA_BASE_VERSIONS
+where created_date = (select Max(created_date) from SS1N1_PRISM_CORE.PRISM_DATA_BASE_VERSIONS)
+#######EXPORTING TABLE PARTITIONS#########
+BEGIN export_database('SS1N1','CC08,CC07,CC06,CC05,CC04,CC03,CC02,CC01','N'); END;
+
+*
+ERROR at line 1:
+ORA-39001: invalid argument value
+ORA-06512: at "SYS.DBMS_SYS_ERROR", line 79
+ORA-06512: at "SYS.DBMS_DATAPUMP", line 3507
+ORA-06512: at "SYS.DBMS_DATAPUMP", line 4184
+ORA-06512: at "SYSTEM.EXPORT_DATABASE", line 249
+ORA-06512: at line 1
+
+
+11:38:01 SYSTEM@PRISMTST >
+
+
+
