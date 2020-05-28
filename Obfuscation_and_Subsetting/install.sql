@@ -315,6 +315,26 @@ PROMPT delete_non_existent_tab_cols
 @delete_non_existent_tab_cols.sql;
 commit;
 
+
+set verify on;
+set define on;
+PROMPT *******************************************************************************
+PROMPT Add dbms_scheduler.add_event_queue_subscriber('&&ANON_OWNER._obfus_jobs_agent')
+PROMPT *******************************************************************************
+
+BEGIN
+  dbms_scheduler.remove_event_queue_subscriber('&&ANON_OWNER._obfus_jobs_agent');
+EXCEPTION
+  WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+  dbms_scheduler.add_event_queue_subscriber('&&ANON_OWNER._obfus_jobs_agent');
+END;
+/
+
+
 set verify on;
 set define on;
 PROMPT ***********************************
