@@ -1,5 +1,5 @@
 create or replace PACKAGE BODY ut is
-
+ 
   procedure log(p_subsystem varchar2,p_log_msg VARCHAR2,p_code NUMBER,p_errm varchar2,p_module varchar2,p_stage_step_code varchar2 default null, p_stage_type varchar2 default null) is
    v_nLogID NUMBER;
   begin
@@ -752,76 +752,76 @@ create or replace PACKAGE BODY ut is
   procedure rebuild_indexes (p_table_owner varchar2 ,p_table_name varchar2) is
 
     cursor c_part_indexes (cp_table_owner varchar2 ,cp_table_name varchar2)
-    is
-      select apk.owner index_owner, atc.table_name, apk.name index_name, atp.partition_name
-       from all_part_key_columns apk
-       join all_tab_columns atc on apk.owner = atc.owner and apk.column_name = atc.column_name
-       join all_tab_partitions atp on atp.table_owner = atc.owner and atp.table_name = atc.table_name
-      where apk.owner = cp_table_owner
-      and apk.name like '%'|| atc.table_name ||'%'
-      and apk.object_type = 'INDEX'
-      and atc.table_name = cp_table_name
-      order by atc.table_name, apk.name, atp.partition_name;
+  is
+    select apk.owner index_owner, atc.table_name, apk.name index_name, atp.partition_name
+     from dd_part_key_columns apk
+     join dd_tab_columns atc on apk.owner = atc.owner and apk.column_name = atc.column_name
+     join dd_tab_partitions atp on atp.table_owner = atc.owner and atp.table_name = atc.table_name
+    where apk.owner = cp_table_owner
+    and apk.name like '%'|| atc.table_name ||'%'
+    and apk.object_type = 'INDEX'
+    and atc.table_name = cp_table_name
+    order by atc.table_name, apk.name, atp.partition_name;
 
-    cursor c_subpart_indexes (cp_index_owner varchar2, cp_index_name varchar2, cp_partition_name varchar2)
-    is
-      select ais.index_owner, ais.index_name, ais.partition_name, ais.subpartition_name
-       from all_ind_subpartitions ais
-      where ais.index_owner = cp_index_owner
-        and ais.index_name = cp_index_name
-        and ais.partition_name = cp_partition_name
-      order by ais.subpartition_name;
+  cursor c_subpart_indexes (cp_index_owner varchar2, cp_index_name varchar2, cp_partition_name varchar2)
+  is
+    select ais.index_owner, ais.index_name, ais.partition_name, ais.subpartition_name
+     from dd_ind_subpartitions ais
+    where ais.index_owner = cp_index_owner
+      and ais.index_name = cp_index_name
+      and ais.partition_name = cp_partition_name
+    order by ais.subpartition_name;
 
-    v_sConstraintName varchar2 (128);
-    const_module      CONSTANT  varchar2(62) := 'ut.rebuild_indexes';
-    v_code            number;
-    v_errm            varchar2(4000);
-    v_ddl             varchar2(4000);
-    v_sub_part_count  integer := 0;
+  v_sConstraintName varchar2 (128);
+  const_module      CONSTANT  varchar2(62) := 'ut.rebuild_indexes';  
+  v_code            number;
+  v_errm            varchar2(4000);
+  v_ddl             varchar2(4000);
+  v_sub_part_count  integer := 0;
+  
+begin
 
   begin
+    select ai.constraint_name 
+    into v_sConstraintName
+    from all_constraints ai where owner = p_table_owner and table_name = p_table_name
+    and constraint_type = 'P';   
+  
+    v_ddl := 'alter index  '||p_table_owner||'.'||v_sConstraintName||' rebuild';
+    obfuscation_control.obfus_log('Executing: ' || v_ddl,null,null,null,null,null,const_module);
+    execute immediate v_ddl;  
+  
+  exception
+    when no_data_found then
+       null;
+  end; 
 
-    begin
-      select ai.constraint_name
-      into v_sConstraintName
-      from all_constraints ai where owner = p_table_owner and table_name = p_table_name
-      and constraint_type = 'P';
+  for r in c_part_indexes (p_table_owner,p_table_name) 
+  loop
 
-      v_ddl := 'alter index  '||p_table_owner||'.'||v_sConstraintName||' rebuild';
-      ut.log(const.k_subsys_obfus,'Executing: ' || v_ddl,null,null,const_module);
-      execute immediate v_ddl;
-
-    exception
-      when no_data_found then
-         null;
-    end;
-
-    for r in c_part_indexes (p_table_owner,p_table_name)
+    v_sub_part_count := 0;
+  
+    for i in c_subpart_indexes(r.index_owner, r.index_name, r.partition_name)
     loop
-
-      v_sub_part_count := 0;
-
-      for i in c_subpart_indexes(r.index_owner, r.index_name, r.partition_name)
-      loop
-        v_ddl := 'alter index  '||i.index_owner||'.'||i.index_name||' rebuild subpartition ' || i.subpartition_name;
-        ut.log(const.k_subsys_obfus,'Executing: ' || v_ddl,null,null,const_module);
-        execute immediate v_ddl;
-        v_sub_part_count := v_sub_part_count + 1;
-      end loop;
-
-      if v_sub_part_count = 0 then
-        v_ddl := 'alter index  '||r.index_owner||'.'||r.index_name||' rebuild partition ' || r.partition_name;
-        ut.log(const.k_subsys_obfus,'Executing: ' || v_ddl,null,null,const_module);
-        execute immediate v_ddl;
-      end if;
+      v_ddl := 'alter index  '||i.index_owner||'.'||i.index_name||' rebuild subpartition ' || i.subpartition_name;
+      obfuscation_control.obfus_log('Executing: ' || v_ddl,null,null,null,null,null,const_module);
+      execute immediate v_ddl;  
+      v_sub_part_count := v_sub_part_count + 1;
     end loop;
 
-  exception when others then
-      v_code := SQLCODE;
-      v_errm := SUBSTR(SQLERRM,1,4000);
-      ut.log(const.k_subsys_obfus,'Unhandled Exception',v_code,v_errm,const_module);
+    if v_sub_part_count = 0 then
+      v_ddl := 'alter index  '||r.index_owner||'.'||r.index_name||' rebuild partition ' || r.partition_name;
+      obfuscation_control.obfus_log('Executing: ' || v_ddl,null,null,null,null,null,const_module);
+      execute immediate v_ddl;  
+    end if;
+  end loop;  
 
-  end rebuild_indexes;
+exception when others then
+    v_code := SQLCODE;
+    v_errm := SUBSTR(SQLERRM,1,4000);
+    obfuscation_control.obfus_log('Unhandled Exception',null,null,null,v_code,v_errm,const_module);
+
+end rebuild_indexes;
 
 
   FUNCTION AN (p_account_name varchar2) return varchar2 as

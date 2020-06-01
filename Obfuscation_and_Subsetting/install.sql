@@ -4,7 +4,7 @@ WHENEVER  OSERROR EXIT SQL.SQLCODE
 set verify on;
 set define on;
 
-spool install_&&OS_OWNER._&&INSTANCE..log
+spool install_&&OS_OWNER._&&OS_INSTANCE..log
 PROMPT DROPPING USER &&OS_OWNER IF EXISTS
 
 DECLARE
@@ -25,7 +25,7 @@ END;
 
 PROMPT CREATING USER &&OS_OWNER 
 --ACCEPT os_owner_pwd CHAR PROMPT 'Type OS_OWNER Password:  ' HIDE
-create user &&OS_OWNER identified by &&PASSWORD default tablespace PRISM_DATA;
+create user &&OS_OWNER identified by &&OS_PASSWORD default tablespace PRISM_DATA;
 
 PROMPT GRANTING PRIVILEGES TO &&OS_OWNER;
 GRANT CONNECT, RESOURCE, UNLIMITED TABLESPACE, CREATE ANY TABLE, DROP ANY TABLE, CREATE SYNONYM, SELECT ANY DICTIONARY TO &&OS_OWNER;
@@ -77,7 +77,7 @@ EXCEPTION
 END;
 /
 
-CREATE PUBLIC DATABASE LINK FROM_READ USING '127.0.0.1:1521/&&INSTANCE';
+CREATE PUBLIC DATABASE LINK FROM_READ USING '127.0.0.1:1521/&&OS_INSTANCE';
 
 BEGIN
   execute immediate 'DROP PUBLIC DATABASE LINK DBLINK_&&REF_SCHEMA';
@@ -88,12 +88,12 @@ END;
 
 CREATE PUBLIC DATABASE LINK DBLINK_&&REF_SCHEMA
    CONNECT TO &&REF_SCHEMA IDENTIFIED BY &&REF_SCHEMA_PASSWORD
-   USING '&&PRISM_HOSTNAME:1521/&&PRISM_SERVICENAME';
+   USING '&&REF_HOSTNAME:1521/&&REF_INSTANCENAME';
 
 
 PROMPT CONNECTING &&OS_OWNER
 
-CONN &&OS_OWNER/&&PASSWORD@&&OS_HOST:1521/&&INSTANCE
+CONN &&OS_OWNER/&&OS_PASSWORD@&&OS_HOST:1521/&&OS_INSTANCE
 
 PROMPT ***************************
 PROMPT Running sequences.sql
@@ -238,6 +238,12 @@ PROMPT *****************************************************
 PROMPT Compiling procedure prc_drop_unused_src_synonyms
 PROMPT *****************************************************
 @prc_drop_unused_src_synonyms.sql
+
+
+
+PROMPT *****************************************************
+PROMPT Loading  Reference Data 
+PROMPT *****************************************************
 
 set verify off;
 set define on;

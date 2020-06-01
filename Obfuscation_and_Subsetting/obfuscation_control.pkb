@@ -1,6 +1,87 @@
 create or replace PACKAGE BODY obfuscation_control
 AS
 
+  procedure switch_obfus_on_off ( p_on_off                varchar2,
+                                  p_obfus_run_id          NUMBER   DEFAULT NULL,
+                                  p_src_prefix            VARCHAR2 DEFAULT NULL,
+                                  p_tgt_prefix            VARCHAR2 DEFAULT NULL,
+                                  p_run_env               VARCHAR2 DEFAULT NULL,
+                                  p_anon_version          VARCHAR2 DEFAULT NULL)
+  is
+    pragma autonomous_transaction;
+    v_code        number;
+    v_errm        varchar2(4000);
+    v_on_off      varchar2(3);
+    const_module  CONSTANT  varchar2(62) := 'obfuscation_control.switch_obfus_on_off';
+  begin
+    select on_off into v_on_off from obfus_onoff_switch;
+    if upper(v_on_off) = upper(p_on_off)
+    then
+      obfuscation_control.obfus_log('obfus_onoff_switch already turned ' || upper(p_on_off),p_src_prefix,p_anon_version,p_tgt_prefix,SQLCODE,SQLERRM,const_module);
+    else
+      delete obfus_onoff_switch; -- only ever allow one row
+      insert into obfus_onoff_switch (on_off, description)  -- on_off check constraint
+      values (upper(p_on_off), 'OFF disables obfuscation and if obfuscation is switched OFF while running then obfuscation is TERMINATED at completion of current stage. ON allows obfuscation as normal.');
+      commit;
+      obfus_log('obfus_onoff_switch turned ' || p_on_off,null,null,null,SQLCODE,SQLERRM,const_module);
+
+      if (p_obfus_run_id is not null and p_src_prefix is not null and p_tgt_prefix is not null and p_run_env is not null and p_anon_version is not null)
+      then
+        obfuscation_control.update_obfus_control(p_obfus_run_id, p_src_prefix, p_tgt_prefix, p_run_env, p_anon_version, upper(p_on_off));
+      else
+        if upper(p_on_off) = 'OFF'
+        then
+          update obfus_control set obfus_status = 'OFF', updated_time = SYSDATE where obfus_status IN ( 'ON', 'RUNNING');
+        elsif upper(p_on_off) = 'ON'
+        then
+          update obfus_control set obfus_status = 'ON', updated_time = SYSDATE where obfus_status IN ( 'OFF', 'RUNNING');
+        end if;
+      end if;
+    end if;
+    
+    commit;    
+  exception
+    when excep.x_CHK_ONOFF_SWITCH_violated then
+      v_code := SQLCODE;
+      v_errm := SUBSTR(SQLERRM,1,4000);
+      rollback;
+      obfuscation_control.obfus_log(const_module || ' error ',null,null,null,v_code,v_errm,const_module);
+      RAISE_APPLICATION_ERROR(-20002, 'obfus_onoff_switch must be either ''ON'' or ''OFF''.' || v_errm);
+    when others then
+      v_code := SQLCODE;
+      v_errm := SUBSTR(SQLERRM,1,4000);
+      rollback;
+      obfuscation_control.obfus_log(const_module || ' error ',null,null,null,v_code,v_errm,const_module);
+  end switch_obfus_on_off;
+
+  function can_continue
+    return boolean
+  is
+    v_code       number;
+    v_errm       varchar2(4000);
+    v_on_off     varchar2(3);
+    bln_continue boolean;
+    const_module  CONSTANT  varchar2(62) := 'obfuscation_control.can_continue';
+  begin
+
+    begin
+      select on_off into v_on_off from obfus_onoff_switch;
+      if upper(v_on_off) = 'OFF'
+      then
+        bln_continue := FALSE;
+      else
+        bln_continue := TRUE;
+      end if;
+
+    exception when others then
+      v_code := SQLCODE;
+      v_errm := SUBSTR(SQLERRM,1,4000);
+      obfuscation_control.obfus_log(const_module || ' error ',null,null,null,v_code,v_errm,const_module);
+      bln_continue := FALSE;
+    end;
+    return bln_continue;
+  end can_continue;
+
   procedure init_audit_events
   is
     v_code        number;
@@ -16,9 +97,9 @@ AS
     when others then
       v_code := SQLCODE;
       v_errm := SUBSTR(SQLERRM,1,4000);
-      ut.log(const.k_subsys_obfus,const_module || ' error ',v_code,v_errm,const_module);
+      obfuscation_control.obfus_log(const_module || ' error ',null,null,null,v_code,v_errm,const_module);
   end init_audit_events;
-
+  
 
   procedure truncate_report_tables
   is
@@ -26,24 +107,24 @@ AS
     v_errm        varchar2(4000);
     const_module  CONSTANT  varchar2(62) := 'obfuscation_control.truncate_report_tables';
   begin
-    ut.log(const.k_subsys_obfus,'truncating tables qa_exceptions,qa_results_pivot,qa_results_tmp,stats_results_pivot1,stats_results_pivot2,stats_results_1,stats_results_2,stats_results_tmp,partition_update_counts',null,null,const_module);
+    obfuscation_control.obfus_log('truncating tables qa_exceptions,qa_results_pivot,qa_results_tmp,stats_results_pivot1,stats_results_pivot2,stats_results_1,stats_results_2,stats_results_tmp,partition_update_counts',null,null,null,null,null,const_module);  
     execute immediate 'truncate table qa_exceptions reuse storage';
     execute immediate 'truncate table qa_results_pivot reuse storage';
     execute immediate 'truncate table qa_results_tmp reuse storage';
     execute immediate 'truncate table stats_results_pivot1 reuse storage';
     execute immediate 'truncate table stats_results_pivot2 reuse storage';
-    execute immediate 'truncate table stats_results_1 reuse storage';
-    execute immediate 'truncate table stats_results_2 reuse storage';
-    execute immediate 'truncate table stats_results_tmp reuse storage';
+    execute immediate 'truncate table stats_results_1 reuse storage';      
+    execute immediate 'truncate table stats_results_2 reuse storage';     
+    execute immediate 'truncate table stats_results_tmp reuse storage'; 
     execute immediate 'truncate table partition_update_counts reuse storage';
   exception
     when others then
       v_code := SQLCODE;
       v_errm := SUBSTR(SQLERRM,1,4000);
-      ut.log(const.k_subsys_obfus,const_module || ' error ',v_code,v_errm,const_module);
-  end truncate_report_tables;
+      obfuscation_control.obfus_log(const_module || ' error ',null,null,null,v_code,v_errm,const_module);
+  end truncate_report_tables;  
 
-
+  
   procedure merge_obfus_ctrl_exec_result( p_obfus_run_id     number,
                                           p_stage_step_code  varchar2,
                                           p_stmt_seq         number,
@@ -54,8 +135,6 @@ AS
                                           p_obfus_log_id     number)
   is
       pragma autonomous_transaction;
-      
-      const_module  CONSTANT  varchar2(62) := 'obfuscation_control.merge_obfus_ctrl_exec_result';
   begin
 
       merge into obfus_control_exec_result x
@@ -75,6 +154,30 @@ AS
 
   end merge_obfus_ctrl_exec_result;
 
+  procedure  obfus_log(p_log_msg VARCHAR2,p_src_prefix VARCHAR2,p_anon_version VARCHAR2,p_tgt_prefix VARCHAR2, p_code NUMBER,p_errm varchar2,p_module varchar2) is
+   v_nLogID NUMBER;
+  begin
+
+    v_nLogID := obfus_log(p_log_msg ,p_src_prefix, p_anon_version , p_tgt_prefix , p_code ,p_errm ,p_module );
+
+  end;
+
+
+  function  obfus_log(p_log_msg VARCHAR2,p_src_prefix VARCHAR2,p_anon_version VARCHAR2,p_tgt_prefix VARCHAR2, p_code NUMBER,p_errm varchar2,p_module varchar2)  return number is
+    pragma autonomous_transaction;
+
+    v_nLogID NUMBER;
+  begin
+
+     v_nLogID := obfuscation_log_seq.nextval;
+     insert into obfuscation_log (log_id,log_msg,src_prefix,anon_version,tgt_prefix,err_code ,errm ,module, mod_timestamp)
+     values (v_nLogID ,p_log_msg ,p_src_prefix,p_anon_version,p_tgt_prefix,p_code,p_errm, p_module, systimestamp);
+     commit;
+
+     return v_nLogID;
+
+  end obfus_log;
+
 
   function create_obfus_control
     return number is
@@ -92,11 +195,10 @@ AS
         commit;
 
         v_run_id_seq := OBFUS_RUN_ID_SEQ.currval;
-        gp.set_obfus_run_id( v_run_id_seq );
-
-        ut.log(const.k_subsys_obfus,'truncate_report_tables ready for new run_id: '||to_char(v_run_id_seq),null,null,const_module);
+        
+        obfuscation_control.obfus_log('truncate_report_tables ready for new run_id: '||to_char(v_run_id_seq),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);      
         obfuscation_control.truncate_report_tables;
-
+        
      exception
         when dup_val_on_index then
            select obfus_run_id
@@ -106,7 +208,8 @@ AS
               and tgt_prefix = gp.tgt_prefix
               and run_env = gp.run_env;
 
-           ut.log(const.k_subsys_obfus, 'Obfuscation control record already exists for source: '|| gp.src_prefix || ' , target: ' || gp.tgt_prefix || ' ,run_env: ' || gp.run_env,null,null,const_module);
+           obfus_log('Obfuscation control record already exists for source: '|| gp.src_prefix || ' , target: ' || gp.tgt_prefix || ' ,run_env: ' || gp.run_env,
+                      gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
      end;
 
      return v_run_id_seq;
@@ -122,7 +225,7 @@ AS
     const_module    CONSTANT  varchar2(62) := 'obfuscation_control.fn_existing_obfus_run_id';
   begin
     begin
-
+        
       select obfus_run_id
         into v_obfus_run_id
         from obfus_control
@@ -137,10 +240,10 @@ AS
       when others then
          v_code := SQLCODE;
          v_errm := SUBSTR(SQLERRM,1,4000);
-         ut.log(const.k_subsys_obfus,const_module || ' error ',v_code,v_errm,const_module);
+         obfuscation_control.obfus_log(const_module || ' error ',null,null,null,v_code,v_errm,const_module);
     end;
-    ut.log(const.k_subsys_obfus,'Check for existing obfus_run_id returns: ' || to_char(v_obfus_run_id),SQLCODE,SQLERRM,const_module);
-
+    obfuscation_control.obfus_log('Check for existing obfus_run_id returns: ' || to_char(v_obfus_run_id),p_src_prefix,null,p_tgt_prefix,SQLCODE,SQLERRM,const_module);
+    
     return v_obfus_run_id;
   end fn_existing_obfus_run_id;
 
@@ -161,9 +264,9 @@ AS
                                   p_environ_stages_loaded VARCHAR2 DEFAULT NULL,
                                   p_auto_stages_loaded    VARCHAR2 DEFAULT NULL,
                                   p_manual_stages_loaded  VARCHAR2 DEFAULT NULL,
-                                  p_dd_loaded             VARCHAR2 DEFAULT NULL,
+                                  p_dd_loaded             VARCHAR2 DEFAULT NULL,											
                                   p_per_stages_loaded     VARCHAR2 DEFAULT NULL,
-                                  p_final_stages_loaded   VARCHAR2 DEFAULT NULL,
+                                  p_final_stages_loaded   VARCHAR2 DEFAULT NULL,										
                                   p_stats_stmts_loaded    VARCHAR2 DEFAULT NULL,
                                   p_pc_transform_loaded   VARCHAR2 DEFAULT NULL,
                                   p_rnd_data_generated    VARCHAR2 DEFAULT NULL)
@@ -172,7 +275,7 @@ AS
      const_module  CONSTANT  varchar2(62) := 'obfuscation_control.update_obfus_control';
   begin
 
-     ut.log(const.k_subsys_obfus,'Updating obfus_control for p_obfus_run_id: '|| to_char(p_obfus_run_id) || ' and p_run_env: ' || p_run_env,null,null,const_module);
+     obfuscation_control.obfus_log('Updating obfus_control for p_obfus_run_id: '|| to_char(p_obfus_run_id) || ' and p_run_env: ' || p_run_env,p_src_prefix,p_anon_version,p_tgt_prefix,null,null,const_module);
 
      update obfus_control
         set obfus_status         = nvl(p_obfus_status,obfus_status),
@@ -187,10 +290,10 @@ AS
             environ_stages_loaded = nvl(p_environ_stages_loaded,environ_stages_loaded),
             manual_stages_loaded = nvl(p_manual_stages_loaded,manual_stages_loaded),
             per_stages_loaded    = nvl(p_per_stages_loaded,per_stages_loaded),
-            final_stages_loaded  = nvl(p_final_stages_loaded,final_stages_loaded),            
+            final_stages_loaded  = nvl(p_final_stages_loaded,final_stages_loaded),
             stats_stmts_loaded   = nvl(p_stats_stmts_loaded,stats_stmts_loaded),
             pc_transform_loaded  = nvl(p_pc_transform_loaded,pc_transform_loaded),
-            dd_loaded            = nvl(p_dd_loaded,dd_loaded),
+            dd_loaded            = nvl(p_dd_loaded,dd_loaded),												  
             rnd_data_generated   = nvl(p_rnd_data_generated,rnd_data_generated),
             run_start_time       = DECODE(p_obfus_status,'RUNNING',sysdate,run_start_time),
             run_completed_date   = DECODE(p_obfus_status,'COMPLETED',sysdate,'RUNNING',null,'FAILED',null,run_completed_date),
@@ -202,9 +305,9 @@ AS
         and tgt_prefix   = p_tgt_prefix;
 
      if sql%rowcount = 0 then
-        ut.log(const.k_subsys_obfus, 'No matching obfus_control record found to update',SQLCODE,SQLERRM,const_module);
+        obfus_log('No matching obfus_control record found to update',p_src_prefix,p_anon_version,p_tgt_prefix,SQLCODE,SQLERRM,const_module);
      end if;
-     ut.log(const.k_subsys_obfus,'Updated obfus_control',SQLCODE,SQLERRM,const_module);
+     obfuscation_control.obfus_log('Updated obfus_control',p_src_prefix,p_anon_version,p_tgt_prefix,SQLCODE,SQLERRM,const_module);
 
      commit;
   end update_obfus_control;
@@ -220,18 +323,18 @@ AS
   begin
 
      v_ddl := 'alter table per_col_mask_overide disable constraint fk_pcmo_pt';
-     ut.log(const.k_subsys_obfus,v_ddl,null,null,const_module);
+     obfuscation_control.obfus_log(v_ddl,gp.src_prefix,null,gp.tgt_prefix,null,null,const_module);
      execute immediate v_ddl;
 
       v_ddl := 'truncate table ' || gp.run_env || '.' || 'per_col_mask_overide';
-     ut.log(const.k_subsys_obfus,v_ddl,null,null,const_module);
+     obfuscation_control.obfus_log(v_ddl,gp.src_prefix,null,gp.tgt_prefix,null,null,const_module);
      execute immediate v_ddl;
 
       v_ddl := 'truncate table ' || gp.run_env || '.' || 'peripheral_tables';
-      ut.log(const.k_subsys_obfus,v_ddl,null,null,const_module);
+      obfuscation_control.obfus_log(v_ddl,gp.src_prefix,null,gp.tgt_prefix,null,null,const_module);
       execute immediate v_ddl;
 
-      ut.log(const.k_subsys_obfus,'Inserting table peripheral_tables',null,null,const_module);
+      obfuscation_control.obfus_log('Inserting table peripheral_tables',gp.src_prefix,null,gp.tgt_prefix,null,null,const_module);
 
       -- Load Manually defined tables - (History + Others tables that have no masking requirement but still may require truncation)
       insert into peripheral_tables ( owner, table_name, table_type,related_owner,related_table_name,single_column, num_rows,load_mechanism )
@@ -291,24 +394,24 @@ AS
       where pt.owner is  null;
 
       commit;
-
+      
       select count(*) into v_nCount from peripheral_tables;
 
-      ut.log(const.k_subsys_obfus,const_module||': '|| v_nCount|| ' rows inserted into peripheral_tables',v_code,v_errm,const_module);
+      obfuscation_control.obfus_log(const_module||': '|| v_nCount|| ' rows inserted into peripheral_tables',gp.src_prefix,null,gp.tgt_prefix,v_code,v_errm,const_module);
 
       -- Load the per_col_mask_overide table
 
-      ut.log(const.k_subsys_obfus,'Inserting table per_col_mask_overide',null,null,const_module);
+      obfuscation_control.obfus_log('Inserting table per_col_mask_overide',null,null,gp.tgt_prefix,null,null,const_module);
 
       insert into per_col_mask_overide(owner,table_name,column_name,table_type)
       select owner,table_name,column_name,table_type from per_col_mask_overide_load;
 
-      ut.log(const.k_subsys_obfus,const_module||': '|| SQL%ROWCOUNT || ' rows inserted into per_col_mask_overide',v_code,v_errm,const_module);
+      obfuscation_control.obfus_log(const_module||': '|| SQL%ROWCOUNT || ' rows inserted into per_col_mask_overide',gp.src_prefix,null,gp.tgt_prefix,v_code,v_errm,const_module);
 
      commit;
 
      v_ddl := 'alter table per_col_mask_overide enable constraint fk_pcmo_pt';
-     ut.log(const.k_subsys_obfus,v_ddl,null,null,const_module);
+     obfuscation_control.obfus_log(v_ddl,gp.src_prefix,null,gp.tgt_prefix,null,null,const_module);
      execute immediate v_ddl;
 
      obfuscation_control.update_obfus_control(p_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_peripheral_tables => 'Y');
@@ -317,7 +420,7 @@ AS
      when others then
         v_code := SQLCODE;
         v_errm := SUBSTR(SQLERRM, 1 , 4000);
-        ut.log(const.k_subsys_obfus,const_module||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),v_code,v_errm,const_module);
+        obfuscation_control.obfus_log(const_module||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,gp.tgt_prefix,v_code,v_errm,const_module);
 
   end insert_peripheral_tables;
 
@@ -337,9 +440,9 @@ AS
      if v_obfus_run_id is null then
         v_obfus_run_id := obfuscation_control.create_obfus_control;
      end if;
-     ut.log(const.k_subsys_obfus,'Running ' || const_module || ' with obfus_control.obfus_run_id = ' || v_obfus_run_id,null,null,const_module);
+     obfuscation_control.obfus_log('Running ' || const_module || ' with obfus_control.obfus_run_id = ' || v_obfus_run_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
 
-     ut.log(const.k_subsys_obfus, 'Constructing v_mig_version by appending date string if gp.tgt_prefix is PSM',SQLCODE,SQLERRM,const_module);
+     obfus_log('Constructing v_mig_version by appending date string if gp.tgt_prefix is PSM',gp.src_prefix,gp.anon_version,gp.tgt_prefix,SQLCODE,SQLERRM,const_module);
      select case gp.tgt_prefix
             when 'PSM'
             then gp.tgt_prefix || '_'|| to_char(sysdate,'DDMONYYYY')
@@ -348,7 +451,7 @@ AS
       into v_mig_version
       from dual;
 
-     ut.log(const.k_subsys_obfus, 'Re-creating table_populated_bu',SQLCODE,SQLERRM,const_module);
+     obfus_log('Re-creating table_populated_bu',gp.src_prefix,gp.anon_version,gp.tgt_prefix,SQLCODE,SQLERRM,const_module);
      begin
         execute immediate 'drop table table_populated_bu purge';
      exception
@@ -358,7 +461,7 @@ AS
 
      execute immediate  'create table table_populated_bu as select * from table_populated';
 
-     ut.log(const.k_subsys_obfus, 'Updating table_populated',SQLCODE,SQLERRM,const_module);
+     obfus_log('Updating table_populated',gp.src_prefix,gp.anon_version,gp.tgt_prefix,SQLCODE,SQLERRM,const_module);
      update table_populated
         set prev_populated = case when prev_populated ='Y' then 'Y'
                                   else populated end,
@@ -375,7 +478,7 @@ AS
      --dbms_output.put_line( v_sql );
      execute immediate v_sql;
 
-     ut.log(const.k_subsys_obfus, 'Merging into table_populated',SQLCODE,SQLERRM,const_module);
+     obfus_log('Merging into table_populated',gp.src_prefix,gp.anon_version,gp.tgt_prefix,SQLCODE,SQLERRM,const_module);
      v_sql := 'merge into table_populated tgt
                   using (select dtc.owner,dtc.table_name,dtc.column_name,dtc.data_type,
                                 case when dtc.num_distinct = 0 then ''N'' else ''Y'' end populated
@@ -393,7 +496,7 @@ AS
 
      commit;
 
-     ut.log(const.k_subsys_obfus, 'Re-creating table keys',SQLCODE,SQLERRM,const_module);
+     obfus_log('Re-creating table keys',gp.src_prefix,gp.anon_version,gp.tgt_prefix,SQLCODE,SQLERRM,const_module);
      begin
         execute immediate 'drop table keys purge';
      exception
@@ -414,7 +517,7 @@ AS
 
      execute immediate 'create index keys_idx1 on keys(table_name,column_name)';
 
-     ut.log(const.k_subsys_obfus, 'Re-populating table obfus_pre_check',SQLCODE,SQLERRM,const_module);
+     obfus_log('Re-populating table obfus_pre_check',gp.src_prefix,gp.anon_version,gp.tgt_prefix,SQLCODE,SQLERRM,const_module);
      v_ddl := 'truncate table ' || gp.run_env || '.' || 'obfus_pre_check';
      execute immediate v_ddl;
 
@@ -439,7 +542,7 @@ AS
             left join peripheral_tables pt on pt.table_name = tp.table_name and pt.owner = tp.owner
              where tp.table_name not like 'A\_%' escape const.k_escape;
 
-     ut.log(const.k_subsys_obfus,const_module||': '|| SQL%ROWCOUNT || ' rows inserted into obfus_pre_check',v_code,v_errm,const_module);
+     obfuscation_control.obfus_log(const_module||': '|| SQL%ROWCOUNT || ' rows inserted into obfus_pre_check',gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
      commit;
 
      update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_checked => 'Y');
@@ -468,9 +571,9 @@ AS
                  and setup_cheque_ranges = 'Y'
                  and ( setup_stats = 'Y' or p_refresh_stats = 'N' )
                  and ( checked = 'Y' or p_pre_check_required = 'N' )
-                 and src_prefix = nvl(p_src_prefix,src_prefix)
-                 and tgt_prefix = nvl(p_tgt_prefix,tgt_prefix)
-                 and run_env    = nvl(p_run_env,run_env)
+                 and src_prefix = nvl(p_src_prefix,src_prefix)       
+                 and tgt_prefix = nvl(p_tgt_prefix,tgt_prefix)  
+                 and run_env    = nvl(p_run_env,run_env) 
                  and anon_version = nvl(p_anon_version,anon_version)
                  and obfus_run_id = nvl(p_obfus_run_id,obfus_run_id)
               order by obfus_run_id desc
@@ -492,13 +595,13 @@ AS
       const_module  CONSTANT  varchar2(62) := 'obfuscation_control.update_cheque_ranges';
    begin
 
-      ut.log(const.k_subsys_obfus, 'UPDATE '||p_src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES set end_no',null,null,const_module);
+      obfus_log('UPDATE '||p_src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES set end_no',p_src_prefix,null,null,null,null,const_module);
       execute immediate 'UPDATE '||p_src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES CR
                             set cr.end_No= nvl((select cr1.start_no -1 from '||p_src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES CR1
                                                 where cr1.bank_account_id = cr.bank_account_id and CR1.cheque_range_type_code = ''REISSUE''),999999)
                           where CR.cheque_range_type_code = ''AUTO''';
 
-      ut.log(const.k_subsys_obfus, 'UPDATE '||p_src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES set start_no',null,null,const_module);
+      obfus_log('UPDATE '||p_src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES set start_no',p_src_prefix,null,null,null,null,const_module);
       execute immediate 'UPDATE '||p_src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES CR
                             set cr.start_no = nvl((select cr1.end_no+1 from '||p_src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES CR1
                                                     where cr1.bank_account_id = cr.bank_account_id and CR1.cheque_range_type_code = ''MANUAL''),1)
@@ -517,20 +620,24 @@ AS
       v_code           number;
       v_errm           varchar2(4000);
 
-    cursor get_tabs(p_prefix VARCHAR2,p_escape VARCHAR2) is select dt.owner,dt.actual_owner, dt.table_name
-                                                              from dd_tables dt
+ cursor get_tabs(p_prefix VARCHAR2,p_escape VARCHAR2) is select replace(dt.owner,p_prefix||'_','') owner ,dt.owner actual_owner, dt.table_name
+                                                              from all_tables dt
                                                              where ( iot_type IS NULL or iot_type != 'IOT_OVERFLOW' )
                                                                --ORA-25191: cannot reference overflow table of an index-organized table ANONPRE8201_INTEGRATION.SYS_IOT_OVER_2055452
+                                                               -- This section needs to be removed - hardcoded references
                                                                and (    dt.table_name not like'RS2365_00000001_A_TMP_NT%'
                                                                     and dt.table_name not like'RS2365_00000001_B_TMP_NT%'
                                                                     and dt.table_name not like'RS2856_00000001_EXTRACT_TMPNT%' )
                                                                --22812. 00000 -  "cannot reference nested table column's storage table"
-                                                               and table_name not like'SS\_%' escape '\'  
-                                                               and table_name not like'DD\_%' escape '\' 
-                                                               and table_name not like'MD\_%' escape '\';
+                                                               and (    dt.table_name not like 'DD\_%' escape '\'
+                                                                    and dt.table_name not like 'MD\_%' escape '\'
+                                                                    and dt.table_name not like 'SS\_%' escape '\' )
+                                                               and  (NESTED <> 'YES')
+                                                               and  (owner like p_prefix||'\_%' escape '\');
+
 
     cursor get_synonyms (p_env VARCHAR2,p_escape VARCHAR2) is
-      select owner,synonym_name
+      select owner,synonym_name 
         from all_synonyms where owner = p_env;
 
     const_module  CONSTANT  varchar2(62) := 'obfuscation_control.setup_synonyms_and_grants';
@@ -543,10 +650,10 @@ AS
            v_obfus_run_id := obfuscation_control.create_obfus_control;
         end if;
      end if;
-     ut.log(const.k_subsys_obfus,'Running ' || const_module || ' with obfus_control.obfus_run_id = ' || v_obfus_run_id,null,null,const_module);
+     obfuscation_control.obfus_log('Running ' || const_module || ' with obfus_control.obfus_run_id = ' || v_obfus_run_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
 
      -- Clear Out all Synonyms in the run environment
-     ut.log(const.k_subsys_obfus,'Dropping synonyms in run env: ' || gp.run_env,null,null,const_module);
+     obfuscation_control.obfus_log('Dropping synonyms in run env: ' || gp.run_env,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        for get_synonyms_rec in get_synonyms(gp.run_env,const.k_escape) loop
          begin
            v_ddl := 'drop synonym  '||get_synonyms_rec.owner||'.'||get_synonyms_rec.synonym_name;
@@ -560,7 +667,7 @@ AS
 
        -- Grant 'Select' on all tables in the source database
        -- Create synonyms for all tables in the source database
-       ut.log(const.k_subsys_obfus,'Creating synonyms and grants for source env: ' || gp.src_prefix,null,null,const_module);
+       obfuscation_control.obfus_log('Creating synonyms and grants for source env: ' || gp.src_prefix,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        for get_tabs_rec in get_tabs(gp.src_prefix,const.k_escape) loop
          begin
 
@@ -579,7 +686,7 @@ AS
        end loop;
 
        -- Grant 'all' on all tables in the target database
-       ut.log(const.k_subsys_obfus,'Granting all on tables in target env: ' || gp.tgt_prefix,null,null,const_module);
+       obfuscation_control.obfus_log('Granting all on tables in target env: ' || gp.tgt_prefix,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        for get_tabs_rec in get_tabs(gp.tgt_prefix,const.k_escape) loop
           begin
              v_ddl := 'grant all on '||get_tabs_rec.actual_owner||'.'||get_tabs_rec.table_name||' to '|| gp.run_env;
@@ -591,7 +698,7 @@ AS
        end loop;
 
        -- Create synonyms for all tables in the target database
-       ut.log(const.k_subsys_obfus,'Creating synonyms for target env: ' || gp.src_prefix,null,null,const_module);
+       obfuscation_control.obfus_log('Creating synonyms for target env: ' || gp.src_prefix,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        for get_tabs_rec in get_tabs(gp.src_prefix,const.k_escape) loop
          begin
             v_ddl := 'create or replace synonym '||gp.run_env ||'.TGT_'||get_tabs_rec.table_name||' for '|| get_tabs_rec.actual_owner||'.'||get_tabs_rec.table_name;
@@ -602,20 +709,20 @@ AS
          end;
        end loop;
 
-       ut.log(const.k_subsys_obfus,'Granting select, update on '||gp.src_prefix||'_CASH_MANAGEMENT.cheque_ranges to '||gp.run_env,null,null,const_module);
+       obfuscation_control.obfus_log('Granting select, update on '||gp.src_prefix||'_CASH_MANAGEMENT.cheque_ranges to '||gp.run_env,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        v_ddl := 'grant select, update on '||gp.src_prefix||'_CASH_MANAGEMENT.cheque_ranges to '||gp.run_env;
        execute immediate v_ddl;
 
        if v_synonym_count > 1 then
          obfuscation_control.update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_setup_synonyms => 'Y');
-         ut.log(const.k_subsys_obfus,'setup completed successfully for ' || v_synonym_count || ' synonyms with obfus_run_id = ' || v_obfus_run_id,null,null,const_module);
+         obfuscation_control.obfus_log('setup completed successfully for ' || v_synonym_count || ' synonyms with obfus_run_id = ' || v_obfus_run_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        end if;
 
   exception
     when others then
        v_code := SQLCODE;
        v_errm := SUBSTR(SQLERRM,1,4000);
-       ut.log(const.k_subsys_obfus,'Error: ' || v_ddl,v_code,v_errm,const_module);
+       obfuscation_control.obfus_log('Error: ' || v_ddl,gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
        raise;
   end setup_synonyms_and_grants;
 
@@ -648,8 +755,8 @@ AS
     cursor c_tgt_table_stats (p_days_since_last_analyzed INTEGER) is
        select distinct dt.actual_owner owner,dt.table_name
          from dd_tables dt
-         join dd_tab_stats dts on dt.owner = dts.owner
-                              and dt.table_name = dts.table_name
+         join dd_tab_statistics dts on dt.owner = dts.owner
+                                    and dt.table_name = dts.table_name
         where dt.table_name NOT LIKE'SYS_IOT%'
           and TRUNC(NVL(dts.last_analyzed,SYSDATE-(p_days_since_last_analyzed+1))) < TRUNC(SYSDATE-p_days_since_last_analyzed);
 
@@ -678,28 +785,28 @@ AS
          v_obfus_run_id := obfuscation_control.create_obfus_control;
       end if;
     end if;
-    ut.log(const.k_subsys_obfus,'Running ' || const_module || ' with obfus_control.obfus_run_id = ' || v_obfus_run_id,null,null,const_module);
+    obfuscation_control.obfus_log('Running ' || const_module || ' with obfus_control.obfus_run_id = ' || v_obfus_run_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
 
     if p_triggers then
       -- Disable all Triggers in the Target Environment
-      ut.log(const.k_subsys_obfus,'opening get_triggers cursor with ' || ' v_tgt_prefix: ' || gp.tgt_prefix || ' const.k_escape: ' || const.k_escape,null,null,const_module);
+      obfuscation_control.obfus_log('opening get_triggers cursor with ' || ' v_tgt_prefix: ' || gp.tgt_prefix || ' const.k_escape: ' || const.k_escape,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
       for get_triggers_rec in get_triggers(v_tgt_prefix,const.k_escape) loop
         begin
-           --ut.log(const.k_subsys_obfus,const_module || ': Disabling trigger ' || get_triggers_rec.owner||'.'||get_triggers_rec.trigger_name,null,null,const_module);
+           --obfuscation_control.obfus_log(const_module || ': Disabling trigger ' || get_triggers_rec.owner||'.'||get_triggers_rec.trigger_name,gp.src_prefix,c,gp.tgt_prefix,null,null,const_module);
            v_ddl := 'alter trigger  '||get_triggers_rec.owner||'.'||get_triggers_rec.trigger_name||' disable';
            execute immediate v_ddl;
            v_trigger_count := v_trigger_count + 1;
         exception when others then
            v_code := SQLCODE;
            v_errm := SUBSTR(SQLERRM,1,4000);
-           ut.log(const.k_subsys_obfus,'Error disabling trigger ' || get_triggers_rec.owner||'.'||get_triggers_rec.trigger_name,v_code,v_errm,const_module);
+           obfuscation_control.obfus_log('Error disabling trigger ' || get_triggers_rec.owner||'.'||get_triggers_rec.trigger_name,gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
            raise;
         end;
       end loop;
 
       if v_trigger_count > 1 then
         obfuscation_control.update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_setup_triggers => 'Y');
-        ut.log(const.k_subsys_obfus,const_module || ' completed successfully for disabling ' || v_trigger_count || ' triggers with obfus_run_id = ' || v_obfus_run_id,null,null,const_module);
+        obfuscation_control.obfus_log(const_module || ' completed successfully for disabling ' || v_trigger_count || ' triggers with obfus_run_id = ' || v_obfus_run_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
       end if;
     end if; -- p_triggers
 
@@ -707,7 +814,8 @@ AS
     if p_stats then
     -- Analyse Stats in the target
 
-       ut.log(const.k_subsys_obfus,'opening c_tgt_table_stats cursor with p_days_since_last_analyzed: ' || p_days_since_last_analyzed,null,null,const_module);
+       obfuscation_control.obfus_log('opening c_tgt_table_stats cursor with p_days_since_last_analyzed: ' || p_days_since_last_analyzed,
+                                      gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        for rec in c_tgt_table_stats(p_days_since_last_analyzed) loop
           begin
 
@@ -721,15 +829,15 @@ AS
          exception when others then
             v_code := SQLCODE;
             v_errm := SUBSTR(SQLERRM,1,4000);
-            ut.log(const.k_subsys_obfus,'Error gathering stats for '||rec.owner||'.'||rec.table_name,v_code,v_errm,const_module);
+            obfuscation_control.obfus_log('Error gathering stats for '||rec.owner||'.'||rec.table_name,gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
          end;
        end loop;
 
        if v_stats_count > 1
        then
-         ut.load_dd_stats(const.k_subsys_obfus);
+         obfuscation_control.load_dd_stats;
          obfuscation_control.update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_setup_stats => 'Y');
-         ut.log(const.k_subsys_obfus,const_module || ' completed successfully gathering stats for ' || v_stats_count || ' target tables with obfus_run_id = ' || v_obfus_run_id,null,null,const_module);
+         obfuscation_control.obfus_log(const_module || ' completed successfully gathering stats for ' || v_stats_count || ' target tables with obfus_run_id = ' || v_obfus_run_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        end if;
     end if; -- p_stats
 
@@ -737,7 +845,7 @@ AS
        --
        --  -- Create indexes for all  HASH and KEY_NS columns in the run environment (ensure the table creation script is run first)
        --
-       ut.log(const.k_subsys_obfus,'opening get_indexes cursor with ' || ' gp.run_env: ' || gp.run_env,null,null,const_module);
+       obfuscation_control.obfus_log('opening get_indexes cursor with ' || ' gp.run_env: ' || gp.run_env,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        for get_indexes_rec in get_indexes(gp.run_env) loop
           begin
 
@@ -758,25 +866,25 @@ AS
           exception
              when excep.x_columns_already_indexed then
                 v_index_count := v_index_count + 1;
-                ut.log(const.k_subsys_obfus,'Columns_already_indexed - index DDL: ' || v_ddl,v_code,v_errm,const_module);
-             when excep.x_object_name_already_used then
+                obfuscation_control.obfus_log('Error columns_already_indexed - index DDL: ' || v_ddl,gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
+             when excep.x_idx_name_already_used then
                 v_code := SQLCODE;
                 v_errm := SUBSTR(SQLERRM,1,4000);
-                ut.log(const.k_subsys_obfus,'idx_name_already_used - index DDL: '  || v_ddl,v_code,v_errm,const_module);
+                obfuscation_control.obfus_log('Error idx_name_already_used - index DDL: '  || v_ddl,gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
              when others then
                 v_code := SQLCODE;
                 v_errm := SUBSTR(SQLERRM,1,4000);
-                ut.log(const.k_subsys_obfus,'Error - index DDL: '  || v_ddl,v_code,v_errm,const_module);
+                obfuscation_control.obfus_log('Error - index DDL: '  || v_ddl,gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
           end;
        end loop;
 
        if (v_indexes_dropped > 0) then
-          ut.log(const.k_subsys_obfus,'Dropped ' || v_indexes_dropped || ' indexes with obfus_run_id = ' || v_obfus_run_id,null,null,const_module);
+          obfuscation_control.obfus_log('Dropped ' || v_indexes_dropped || ' indexes with obfus_run_id = ' || v_obfus_run_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        end if;
 
        if (v_index_count > 1) then
           obfuscation_control.update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_setup_indexes => 'Y');
-          ut.log(const.k_subsys_obfus,const_module || ' completed successfully for creating ' || v_index_count || ' indexes with obfus_run_id = ' || v_obfus_run_id,null,null,const_module);
+          obfuscation_control.obfus_log(const_module || ' completed successfully for creating ' || v_index_count || ' indexes with obfus_run_id = ' || v_obfus_run_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
        end if;
     end if; -- p_indexes
 
@@ -784,16 +892,16 @@ AS
     if p_cheque_ranges then
       -- Cheque Range Adjustment Patch
 
-      ut.log(const.k_subsys_obfus,const_module || ': alter trigger '||gp.src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES_BRIUD disable',null,null,const_module);
+      obfuscation_control.obfus_log(const_module || ': alter trigger '||gp.src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES_BRIUD disable',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
       execute immediate 'alter trigger '||gp.src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES_BRIUD disable';
 
       obfuscation_control.update_cheque_ranges(gp.src_prefix);
 
-      ut.log(const.k_subsys_obfus,const_module || ': alter trigger '||gp.src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES_BRIUD enable',null,null,const_module);
+      obfuscation_control.obfus_log(const_module || ': alter trigger '||gp.src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES_BRIUD enable',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
       execute immediate 'alter trigger '||gp.src_prefix||'_CASH_MANAGEMENT.CHEQUE_RANGES_BRIUD enable';
 
       obfuscation_control.update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_setup_cheque_ranges => 'Y');
-      ut.log(const.k_subsys_obfus,const_module || ' completed successfully for cheque_ranges with obfus_run_id = ' || v_obfus_run_id,null,null,const_module);
+      obfuscation_control.obfus_log(const_module || ' completed successfully for cheque_ranges with obfus_run_id = ' || v_obfus_run_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
 
     end if; --p_cheque_ranges
 
@@ -802,7 +910,7 @@ AS
   exception when others then
        v_code := SQLCODE;
        v_errm := SUBSTR(SQLERRM,1,4000);
-       ut.log(const.k_subsys_obfus,'Error: ' || v_ddl,v_code,v_errm,const_module);
+       obfuscation_control.obfus_log('Error: ' || v_ddl,gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
        raise;
 
   end setup_obfus_env;
@@ -820,14 +928,14 @@ AS
                         p_check_dependency    VARCHAR2 DEFAULT 'Y')  -- Only execute steps with dependency set to 'Y'
   is
     const_module      CONSTANT  varchar2(62) := 'obfuscation_control.obfuscate';
-
+    
     v_obfus_run_id    obfus_control.obfus_run_id%TYPE := null;
     v_code            number;
     v_errm            varchar2(4000);
     rec_obfus_control obfus_control%ROWTYPE;
-
+	
 	  v_stage_tab  string_list_257;
-    v_msg_tab  string_list_4000;
+    v_msg_tab  string_list_4000; 
 	  v_col_mask_row_threshold number;
 
   begin
@@ -839,8 +947,8 @@ AS
        exception when others then
        v_col_mask_row_threshold := const.k_const_COL_MASK_ROW_THRESHOLD_DEF;
     end;
-
-    gp.set_col_mask_row_threshold  (v_col_mask_row_threshold);
+           
+    gp.set_col_mask_row_threshold  (v_col_mask_row_threshold);           
     gp.set_src_prefix(p_src_prefix );
     gp.set_tgt_prefix(p_tgt_prefix) ;
     gp.set_run_env(p_run_env);
@@ -861,10 +969,10 @@ AS
           --x_obfus_run_param_mismatch
           RAISE_APPLICATION_ERROR(-20005,'src, tgt or run_env does not match existing obfus_run_id.');
        end if;
-    else
+    else   
       gp.obfus_run_id := obfuscation_control.create_obfus_control;
       --initialise
-      ut.log(const.k_subsys_obfus,'initialising obfus_control record',SQLCODE,SQLERRM,const_module);
+      obfuscation_control.obfus_log('initialising obfus_control record',gp.src_prefix,gp.anon_version,gp.tgt_prefix,SQLCODE,SQLERRM,const_module);
        begin
           select * into rec_obfus_control from obfus_control  where obfus_run_id = gp.obfus_run_id;
        exception
@@ -875,7 +983,7 @@ AS
 --      rec_obfus_control.src_prefix := gp.src_prefix;
 --      rec_obfus_control.tgt_prefix := gp.tgt_prefix;
 --      rec_obfus_control.run_env := gp.run_env;
---      rec_obfus_control.anon_version := gp.anon_version;
+--      rec_obfus_control.anon_version := gp.anon_version; 
 --      rec_obfus_control.setup_synonyms := 'N';
 --      rec_obfus_control.setup_triggers := 'N';
 --      rec_obfus_control.setup_indexes := 'N';
@@ -890,168 +998,168 @@ AS
 --      rec_obfus_control.stats_stmts_loaded := 'N';
 --      rec_obfus_control.rnd_data_generated := 'N';
 --      rec_obfus_control.pc_transform_loaded := 'N';
---	    rec_obfus_control.dd_loaded := 'N';
+--	    rec_obfus_control.dd_loaded := 'N';								 
 --	    rec_obfus_control.final_stages_loaded := 'N';
-
+									   
     end if;
 
-	  if ut.can_continue(const.k_subsys_obfus) then
+	  if can_continue then
       if (gp.obfus_run_id is not null and rec_obfus_control.dd_loaded = 'N') then
-          ut.log(const.k_subsys_obfus,'ut.load_dd '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
-          ut.load_dd(const.k_subsys_obfus);
+          obfuscation_control.obfus_log('load_dd '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+          load_dd;
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
     -- SYNONYMS and GRANTS
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if gp.obfus_run_id is null OR (gp.obfus_run_id is not null and rec_obfus_control.setup_synonyms = 'N') then
-        ut.log(const.k_subsys_obfus,'Calling setup_synonyms_and_grants for gp.obfus_run_id: ' || to_char(gp.obfus_run_id),null,null,const_module);
+        obfuscation_control.obfus_log('Calling setup_synonyms_and_grants for gp.obfus_run_id: ' || to_char(gp.obfus_run_id),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);      
         setup_synonyms_and_grants(gp.obfus_run_id);
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
     -- TRIGGERS
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if gp.obfus_run_id is null OR (gp.obfus_run_id is not null and rec_obfus_control.setup_triggers = 'N') then
-        ut.log(const.k_subsys_obfus,'Calling setup_obfus_env for triggers with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),null,null,const_module);
+        obfuscation_control.obfus_log('Calling setup_obfus_env for triggers with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);       
         setup_obfus_env(gp.obfus_run_id, p_triggers => TRUE, p_indexes => FALSE, p_cheque_ranges => FALSE, p_stats => FALSE );
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
     -- INDEXES
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if gp.obfus_run_id is null OR (gp.obfus_run_id is not null and rec_obfus_control.setup_indexes = 'N') then
-        ut.log(const.k_subsys_obfus,'Calling setup_obfus_env for indexes with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),null,null,const_module);
+        obfuscation_control.obfus_log('Calling setup_obfus_env for indexes with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);            
         setup_obfus_env(gp.obfus_run_id, p_triggers => FALSE, p_indexes => TRUE, p_cheque_ranges => FALSE, p_stats => FALSE );
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
     -- CHEQUE RANGES
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if gp.obfus_run_id is null OR (gp.obfus_run_id is not null and rec_obfus_control.setup_cheque_ranges = 'N') then
-        ut.log(const.k_subsys_obfus,'Calling setup_obfus_env for cheque_ranges with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),null,null,const_module);
+        obfuscation_control.obfus_log('Calling setup_obfus_env for cheque_ranges with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);                 
         setup_obfus_env(gp.obfus_run_id, p_triggers => FALSE, p_indexes => FALSE, p_cheque_ranges => TRUE, p_stats => FALSE );
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
     -- STATS
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if p_refresh_stats = 'Y' then
         if gp.obfus_run_id is null OR (gp.obfus_run_id is not null and rec_obfus_control.setup_stats = 'N') then
-          ut.log(const.k_subsys_obfus,'Calling setup_obfus_env for stats with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),null,null,const_module);
+          obfuscation_control.obfus_log('Calling setup_obfus_env for stats with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);                        
           setup_obfus_env(gp.obfus_run_id, p_triggers => FALSE, p_indexes => FALSE, p_cheque_ranges => FALSE, p_stats => TRUE );
         end if;
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
     --PERIPHERAL TABLES
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if gp.obfus_run_id is null OR (gp.obfus_run_id is not null and rec_obfus_control.peripheral_tables = 'N') then
-        ut.log(const.k_subsys_obfus, 'Calling insert_peripheral_tables with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),SQLCODE,SQLERRM,const_module);
+        obfus_log('Calling insert_peripheral_tables with gp.obfus_run_id: ' || to_char(gp.obfus_run_id),gp.src_prefix,gp.anon_version,gp.tgt_prefix,SQLCODE,SQLERRM,const_module);
         insert_peripheral_tables(gp.obfus_run_id);
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
     -- PRECHECK
     if p_pre_check_required = 'Y' then
-      if ut.can_continue(const.k_subsys_obfus) then
+      if can_continue then
         if gp.obfus_run_id is null OR (gp.obfus_run_id is not null and rec_obfus_control.checked = 'N') then
            obfus_precheck();
-           ut.switch_subsystem_on_off(const.k_subsys_obfus,'OFF',gp.obfus_run_id,gp.anon_version);
+           obfuscation_control.switch_obfus_on_off('OFF',gp.obfus_run_id,gp.src_prefix,gp.tgt_prefix,gp.run_env,gp.anon_version);
         end if;
       else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
       -- Switch obfuscation off to allow analysis of prechecks
     end if;
 
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       obfuscation_control.check_obfus_ready(gp.obfus_run_id,rec_obfus_control.src_prefix,rec_obfus_control.tgt_prefix,rec_obfus_control.run_env,rec_obfus_control.anon_version,p_pre_check_required,p_refresh_stats);
 
       dbms_output.put_line('gp.obfus_run_id: ' || gp.obfus_run_id || ' rec_obfus_control.src_prefix: ' || rec_obfus_control.src_prefix || ' rec_obfus_control.tgt_prefix: ' || rec_obfus_control.tgt_prefix || ' rec_obfus_control.run_env: ' || rec_obfus_control.run_env || ' rec_obfus_control.anon_version: ' || rec_obfus_control.anon_version);
 
       if ( gp.obfus_run_id is null or rec_obfus_control.src_prefix is null or rec_obfus_control.tgt_prefix is null or rec_obfus_control.run_env is null or rec_obfus_control.anon_version is null )
       then
-         ut.log(const.k_subsys_obfus,'RAISE excep.x_obfus_not_ready: ' || 'gp.obfus_run_id: ' || gp.obfus_run_id || ' rec_obfus_control.src_prefix: '|| rec_obfus_control.src_prefix || ' rec_obfus_control.tgt_prefix: ' || rec_obfus_control.tgt_prefix || ' rec_obfus_control.run_env: ' || rec_obfus_control.run_env || ' rec_obfus_control.anon_version: ' || rec_obfus_control.anon_version,null,null,const_module);
+         obfuscation_control.obfus_log('RAISE excep.x_obfus_not_ready: ' || 'gp.obfus_run_id: ' || gp.obfus_run_id || ' rec_obfus_control.src_prefix: '|| rec_obfus_control.src_prefix || ' rec_obfus_control.tgt_prefix: ' || rec_obfus_control.tgt_prefix || ' rec_obfus_control.run_env: ' || rec_obfus_control.run_env || ' rec_obfus_control.anon_version: ' || rec_obfus_control.anon_version,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
          RAISE excep.x_obfus_not_ready;
       else
          obfuscation_control.update_obfus_control(gp.obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_obfus_status => 'RUNNING');
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if (gp.obfus_run_id is not null and rec_obfus_control.pc_transform_loaded = 'N') then
-          ut.log(const.k_subsys_obfus,'load_pc_transform '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('load_pc_transform '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           load_pc_transform();
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
-
-    if ut.can_continue(const.k_subsys_obfus) then
+	
+    if can_continue then
       if (gp.obfus_run_id is not null and rec_obfus_control.environ_stages_loaded = 'N') then
-          ut.log(const.k_subsys_obfus,'load_environ_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('load_environ_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           load_environ_stages();
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if (gp.obfus_run_id is not null and rec_obfus_control.auto_stages_loaded = 'N') then
-          ut.log(const.k_subsys_obfus,'load_auto_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('load_auto_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           load_auto_stages(gp.obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version);
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if (gp.obfus_run_id is not null and rec_obfus_control.manual_stages_loaded = 'N') then
-          ut.log(const.k_subsys_obfus,'load_manual_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('load_manual_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           load_manual_stages(gp.obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version);
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if (gp.obfus_run_id is not null and rec_obfus_control.per_stages_loaded = 'N') then
-          ut.log(const.k_subsys_obfus,'load_per_trans_cols '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('load_per_trans_cols '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           load_per_trans_cols(gp.obfus_run_id,gp.src_prefix,gp.tgt_prefix,gp.run_env,gp.anon_version);
-          ut.log(const.k_subsys_obfus,'load_per_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('load_per_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           load_per_stages(gp.obfus_run_id,gp.src_prefix,gp.tgt_prefix,gp.run_env,gp.anon_version);
        end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
-	if ut.can_continue(const.k_subsys_obfus) then
+	if can_continue then
       if (gp.obfus_run_id is not null and rec_obfus_control.final_stages_loaded = 'N') then
-          ut.log(const.k_subsys_obfus,'load_final_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('load_final_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           load_final_stages(gp.obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version);
       end if;
-    else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
-	if ut.can_continue(const.k_subsys_obfus) then
-      if (gp.obfus_run_id is not null) then
-        ut.log(const.k_subsys_obfus,'check_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
-        If check_stages(gp.obfus_run_id,gp.src_prefix,gp.tgt_prefix,gp.run_env,gp.anon_version,v_stage_tab ,v_msg_tab) = const.k_Fail then
+    else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;					
+	if can_continue then
+      if (gp.obfus_run_id is not null) then 
+        obfuscation_control.obfus_log('check_stages '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+        If check_stages(gp.obfus_run_id,gp.src_prefix,gp.tgt_prefix,gp.run_env,gp.anon_version,v_stage_tab ,v_msg_tab) = const.k_Fail then  
           for  i IN  1..v_stage_tab.count loop
             if i = 1 then
-              ut.switch_subsystem_on_off(const.k_subsys_obfus,'OFF',gp.obfus_run_id,gp.src_prefix,gp.tgt_prefix,gp.run_env,gp.anon_version);
+              obfuscation_control.switch_obfus_on_off('OFF',gp.obfus_run_id,gp.src_prefix,gp.tgt_prefix,gp.run_env,gp.anon_version);
             end if;
-            ut.log(const.k_subsys_obfus,'check_stages violation :'||' table ( '||v_stage_tab(i)||') and '||v_msg_tab(i),null,null,const_module);
+            obfuscation_control.obfus_log('check_stages violation :'||' table ( '||v_stage_tab(i)||') and '||v_msg_tab(i) ,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           end loop;
         end if;
-      end if;
+      end if;   
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
-    if ut.can_continue(const.k_subsys_obfus) then
+    if can_continue then
       if (gp.obfus_run_id is not null and rec_obfus_control.stats_stmts_loaded = 'N') then
-           ut.log(const.k_subsys_obfus,'load_stats_stmts '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+           obfuscation_control.obfus_log('load_stats_stmts '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
            load_stats_stmts(gp.obfus_run_id,gp.src_prefix,const.k_REP_SRC_SYN_PREFIX,const.k_REP_TGT_SYN_PREFIX, gp.tgt_prefix, gp.run_env, gp.anon_version);
       end if;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
-     if ut.can_continue(const.k_subsys_obfus) then
+     if can_continue then
       if (gp.obfus_run_id is not null and rec_obfus_control.rnd_data_generated = 'N') then
-          ut.log(const.k_subsys_obfus,'anonymisation_process.reset_schema '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('anonymisation_process.reset_schema '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           anonymisation_process.reset_schema;
 
-          ut.log(const.k_subsys_obfus,'anonymisation_process.gen_rnd_notes '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('anonymisation_process.gen_rnd_notes '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           anonymisation_process.gen_rnd_notes;
 
-          ut.log(const.k_subsys_obfus,'anonymisation_process.gen_rnd_addresses '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('anonymisation_process.gen_rnd_addresses '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           anonymisation_process.gen_rnd_addresses;
 
-          ut.log(const.k_subsys_obfus,'anonymisation_process.gen_rnd_names '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+          obfuscation_control.obfus_log('anonymisation_process.gen_rnd_names '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
           anonymisation_process.gen_rnd_names;
 
           update_obfus_control(gp.obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_rnd_data_generated => 'Y');
@@ -1060,32 +1168,30 @@ AS
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
 
-   if ut.can_continue(const.k_subsys_obfus) then
-      ut.log(const.k_subsys_obfus,'anonymisation_process.set_globals '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+   if can_continue then
+      obfuscation_control.obfus_log('anonymisation_process.set_globals '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
       anonymisation_process.set_globals( gp.obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version );
-
-      ut.log(const.k_subsys_obfus,'init_audit_events '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+      
+      obfuscation_control.obfus_log('init_audit_events '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
       obfuscation_control.init_audit_events;
-
-      ut.log(const.k_subsys_obfus,'execute_obfus_steps '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+      
+      obfuscation_control.obfus_log('execute_obfus_steps '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
       execute_obfus_steps(p_start_step, p_end_step,p_check_dependency);
 
-      ut.log(const.k_subsys_obfus,'apply_temp_patches '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+      obfuscation_control.obfus_log('apply_temp_patches '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
       anonymisation_process.apply_temp_patches;
 
-      ut.log(const.k_subsys_obfus,'enable_triggers '||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
-      ut.enable_triggers(const.k_subsys_obfus);
-
       obfuscation_control.update_obfus_control(gp.obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_obfus_status => 'COMPLETED');
-      ut.log(const.k_subsys_obfus,'Finish'||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+      obfuscation_control.obfus_log('Finish'||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
    else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
 
  exception
     when excep.x_obfus_not_ready then
       v_code := SQLCODE;
       v_errm := SUBSTR(SQLERRM,1,4000);
-      ut.log(const.k_subsys_obfus,'Obfuscation not ready to run: check obfus_control table. ' ||
-                'The PRE, ANON and POST schema prefixes must be configured and PENDING to run with setup and checked flags Y',v_code,v_errm,const_module);
+      obfuscation_control.obfus_log('Obfuscation not ready to run: check obfus_control table. ' ||
+                'The PRE, ANON and POST schema prefixes must be configured and PENDING to run with setup and checked flags Y',
+                gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
       RAISE_APPLICATION_ERROR(-20001,'Obfuscation not ready to run: check obfus_control table.');
     when excep.x_cannot_continue
     then
@@ -1093,7 +1199,7 @@ AS
     when others then
       v_code := SQLCODE;
       v_errm := SUBSTR(SQLERRM,1,4000);
-      ut.log(const.k_subsys_obfus, substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),v_code,v_errm,const_module);
+      obfus_log(substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
       obfuscation_control.update_obfus_control(gp.obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_obfus_status => 'FAILED');
  end obfuscate;
 
@@ -1121,12 +1227,12 @@ cursor get_stmts(p_start_step varchar2,p_end_step varchar2) is
       const_module  CONSTANT  varchar2(62) := 'obfuscation_control.execute_obfus_steps';
 
       v_sDependentStatus varchar2(10);
-	  v_prev_stage_step_code  obfus_ctrl_stmts.stage_step_code%type;
+	  v_prev_stage_step_code  obfus_ctrl_stmts.stage_step_code%type;															
 
 begin
 
   v_execution_id := execution_seq.nextval;
-  gp.set_obfus_execution_id(v_execution_id);
+  gp.set_execution_id(v_execution_id);  								
 
   v_prev_stage_step_code := null;
   for get_stmts_rec in get_stmts(p_start_step, p_end_step) loop
@@ -1134,7 +1240,7 @@ begin
     if substr(get_stmts_rec.stage_step_code,1,const.k_STAGE_CODE_SIZE)  <> substr(v_prev_stage_step_code,1,const.k_STAGE_CODE_SIZE) then
       commit;
     end if;
-    if ut.can_continue(const.k_subsys_obfus)
+    if can_continue
     then
       begin
 
@@ -1181,9 +1287,9 @@ begin
           case when get_stmts_rec.step_type = 'P' then
 
             v_tsStart := systimestamp;
-            ut.log(const.k_subsys_obfus, 'merge_obfus_ctrl_exec_result: v_execution_id: ' || v_execution_id,null,null,const_module);
+            obfus_log('merge_obfus_ctrl_exec_result: v_execution_id: ' || v_execution_id,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
             merge_obfus_ctrl_exec_result(gp.obfus_run_id,get_stmts_rec.stage_step_code,get_stmts_rec.stmt_seq,v_execution_id,v_tsStart,null,const.k_STARTED,null);
-            ut.log(const.k_subsys_obfus, 'executing: '||get_stmts_rec.stage_step_code ||' stmt : ' ||substr(v_sStmt,1,4000 - length('executing: '||get_stmts_rec.stage_step_code ||' stmt : ')),null,null,const_module);
+            obfus_log('executing: '||get_stmts_rec.stage_step_code ||' stmt : ' ||substr(v_sStmt,1,4000 - length('executing: '||get_stmts_rec.stage_step_code ||' stmt : ')),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
             execute immediate 'begin '|| v_sStmt ||'; end;';
             v_tsEnd := systimestamp;
             merge_obfus_ctrl_exec_result(gp.obfus_run_id,get_stmts_rec.stage_step_code,get_stmts_rec.stmt_seq,v_execution_id,v_tsStart,v_tsEnd,const.k_COMPLETED,null);
@@ -1191,9 +1297,9 @@ begin
           when get_stmts_rec.step_type = 'S' then
 
             v_tsStart := systimestamp;
-            ut.log(const.k_subsys_obfus, 'merge_obfus_ctrl_exec_result',null,null,const_module);
+            obfus_log('merge_obfus_ctrl_exec_result',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
             merge_obfus_ctrl_exec_result(gp.obfus_run_id,get_stmts_rec.stage_step_code,get_stmts_rec.stmt_seq,v_execution_id,v_tsStart,null,const.k_STARTED,null);
-            ut.log(const.k_subsys_obfus, 'executing: '||get_stmts_rec.stage_step_code ||' stmt : ' ||substr(v_sStmt,1,4000 - length('executing: '||get_stmts_rec.stage_step_code ||' stmt : ')),null,null,const_module);
+            obfus_log('executing: '||get_stmts_rec.stage_step_code ||' stmt : ' ||substr(v_sStmt,1,4000 - length('executing: '||get_stmts_rec.stage_step_code ||' stmt : ')),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
             execute immediate v_sStmt;
             v_tsEnd := systimestamp;
 
@@ -1202,9 +1308,9 @@ begin
           when get_stmts_rec.step_type = 'D' then
 
             v_tsStart := systimestamp;
-            ut.log(const.k_subsys_obfus, 'merge_obfus_ctrl_exec_result',null,null,const_module);
+            obfus_log('merge_obfus_ctrl_exec_result',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
             merge_obfus_ctrl_exec_result(gp.obfus_run_id,get_stmts_rec.stage_step_code,get_stmts_rec.stmt_seq,v_execution_id,v_tsStart,null,const.k_STARTED,null);
-            ut.log(const.k_subsys_obfus, 'executing: '||get_stmts_rec.stage_step_code ||' stmt : ' ||substr(v_sStmt,1,4000 - length('executing: '||get_stmts_rec.stage_step_code ||' stmt : ')),null,null,const_module);
+            obfus_log('executing: '||get_stmts_rec.stage_step_code ||' stmt : ' ||substr(v_sStmt,1,4000 - length('executing: '||get_stmts_rec.stage_step_code ||' stmt : ')),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
 
             begin
                execute immediate v_sStmt;
@@ -1224,7 +1330,7 @@ begin
             merge_obfus_ctrl_exec_result(gp.obfus_run_id,get_stmts_rec.stage_step_code,get_stmts_rec.stmt_seq,v_execution_id,v_tsStart,v_tsEnd,const.k_DEP_IMCOMPLETE,null);
 
         end if;
-
+  
 
       exception when others then
 
@@ -1232,7 +1338,8 @@ begin
 
         v_code := SQLCODE;
         v_errm := SUBSTR(SQLERRM,1,4000);
-        vLogID := ut.log(const.k_subsys_obfus,substr('Error: '||get_stmts_rec.stage_step_code ||': '|| dbms_utility.format_error_backtrace(),1,4000),v_code,v_errm,const_module);
+        vLogID := obfuscation_control.obfus_log(substr('Error: '||get_stmts_rec.stage_step_code ||': '|| dbms_utility.format_error_backtrace(),1,4000)
+        ,gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
 
         merge_obfus_ctrl_exec_result(gp.obfus_run_id,get_stmts_rec.stage_step_code,get_stmts_rec.stmt_seq,v_execution_id,v_tsStart,v_tsEnd,const.k_FAILED,vLogID);
 
@@ -1240,14 +1347,14 @@ begin
 
       end;
     else RAISE_APPLICATION_ERROR(-20003, const.k_cant_continue_err_msg);  end if;
-	v_prev_stage_step_code := get_stmts_rec.stage_step_code;
+	v_prev_stage_step_code := get_stmts_rec.stage_step_code;														
   end loop;
    commit;
 
 exception when others then
   v_code := SQLCODE;
   v_errm := SUBSTR(SQLERRM,1,4000);
-  ut.log(const.k_subsys_obfus,'Error: ' ||'Unexpected',v_code,v_errm,const_module);
+  obfuscation_control.obfus_log('Error: ' ||'Unexpected',gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
   raise;
 end execute_obfus_steps;
 
@@ -1349,15 +1456,15 @@ begin
    from
    (
       with ind_cols as (select dic.index_name ,dcc.owner,dcc.table_name,dcc.column_name,dic.column_position
-                        from dd_cons_columns dcc
+                        from dd_cons_columns dcc 
                         join dd_constraints dc on dc.owner = dcc.owner and dc.constraint_name = dcc.constraint_name
                         join dd_ind_columns dic on dic.table_owner = dcc.owner and dic.table_name = dcc.table_name and dic.column_name = dcc.column_name and dic.index_name = dcc.constraint_name
                         and dic.column_name not like 'SYS' || '\_' || '%' escape '\'
-                        and dc.constraint_type in ('P','U'))
+                        and dc.constraint_type in ('P','U'))    
       select  pt2.table_owner,pt2.table_name ,ic.index_name,listagg(ic.column_name,',') within group (ORDER BY ic.column_position ) col_list
       from  (select distinct owner table_owner,table_name from pc_transform_2) pt2
       left outer join ind_cols ic on ic.owner = pt2.table_owner and ic.table_name = pt2.table_name
-      group by pt2.table_owner,pt2.table_name ,ic.index_name
+      group by pt2.table_owner,pt2.table_name ,ic.index_name   
     ) res;
 
      v_nStep := 4;
@@ -1402,7 +1509,7 @@ begin
           from pc_transform pc
       ) res1
     );
-
+ 
    commit;
 
    update_obfus_control(gp.obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_environ_stages_loaded => 'Y');
@@ -1426,7 +1533,7 @@ begin
   v_nStep := 1;
   v_nOrder := 1;
   v_nStage :=  1;
-
+  
      insert into obfus_ctrl_stmts  (obfus_run_id,stage_step_code,dependent_ss_code,step_type,stmt_seq,owner,table_name,stmt)
               select p_obfus_run_id,
               'F'||LPAD(to_char(v_nStage),const.k_STAGE_CODE_SIZE,'0')||'S'||LPAD(to_char(v_nStep),const.k_STEP_CODE_SIZE,'0') as   stage_step_code  ,
@@ -1437,11 +1544,11 @@ begin
               p_run_env||'.'||'anonymisation_process.apply_temp_patches' stmt
               from dual ;
 
-
+  
   v_nStep := 1;
   v_nOrder := 1;
   v_nStage :=  2;
-
+  
      insert into obfus_ctrl_stmts  (obfus_run_id,stage_step_code,dependent_ss_code,step_type,stmt_seq,owner,table_name,stmt)
               select p_obfus_run_id,
               'F'||LPAD(to_char(v_nStage),const.k_STAGE_CODE_SIZE,'0')||'S'||LPAD(to_char(v_nStep),const.k_STEP_CODE_SIZE,'0') as   stage_step_code  ,
@@ -1451,7 +1558,6 @@ begin
               null,null,
               p_run_env||'.'||'obfuscation_control.execution_report('|| p_obfus_run_id ||','''||p_src_prefix||''',''' ||p_tgt_prefix||''','''||p_run_env||''','''||p_anon_version||''')' stmt
               from dual ;
-  commit;
   
   v_nStep := 1;
   v_nOrder := 1;
@@ -1464,9 +1570,11 @@ begin
               'P' step_type,
               to_char(1) as stmt_seq ,
               null,null,
-              p_run_env||'.'||'ut.enable_triggers('||chr(39)||const.k_subsys_subset||chr(39)||')' stmt
+              p_run_env||'.'||'ut.enable_triggers' stmt
               from dual ;
-              
+
+  commit;
+
   update_obfus_control(p_obfus_run_id, p_src_prefix, p_tgt_prefix, p_run_env, p_anon_version, p_final_stages_loaded => 'Y');
 
 end load_final_stages;
@@ -1596,14 +1704,14 @@ begin
         group by owner,table_name
       )
     );
-
+	    
   --  --============================
   --  --STEP  - Commit
   -- --============================
 
   v_nStep := 2;
   v_nOrder := 1;
-
+  
     insert into obfus_ctrl_stmts  (obfus_run_id,stage_step_code,dependent_ss_code,step_type,stmt_seq,owner,table_name,stmt)
       select p_obfus_run_id as obfus_run_id,
       'A'||LPAD(to_char(row_number() over (partition by 1 order by owner,table_name)),const.k_STAGE_CODE_SIZE,'0')||'S'||LPAD(to_char(v_nStep),const.k_STEP_CODE_SIZE,'0') as   stage_step_code ,
@@ -1613,7 +1721,7 @@ begin
        owner,table_name,
        'commit' stmt
        from
-       (
+       (        
             select distinct pct.owner ,pct.table_name
             from pc_transform_2 pct
        );
@@ -1751,7 +1859,7 @@ begin
             where enabled_YN = 'Y'
           )
        );
-
+       
 
     ---- ====================
     ---- STEP  - Reports 2
@@ -1986,14 +2094,14 @@ procedure load_per_trans_cols(p_obfus_run_id number, p_src_prefix varchar2, p_tg
 
   const_module      CONSTANT  varchar2(62) := 'obfuscation_control.load_Per_trans_cols';
   v_code       number;
-  v_errm       varchar2(4000);
-
-  cursor c_Per_trans_col_con
+  v_errm       varchar2(4000); 
+  
+  cursor c_Per_trans_col_con    
   is
-      select ptc.owner, ptc.table_name, ptc.column_name, acc.owner constraint_owner, acc.constraint_name,
+      select ptc.owner, ptc.table_name, ptc.column_name, acc.owner constraint_owner, acc.constraint_name, 
              ac.constraint_type, ac.r_owner, ac.r_constraint_name,
              REPLACE(REPLACE(dbms_lob.substr(dbms_metadata.get_ddl('CONSTRAINT',acc.constraint_name,acc.owner),4000,1),'ENABLE','ENABLE NOVALIDATE'),'NOVALIDATE NOVALIDATE','NOVALIDATE') constraint_ddl
-        from Per_trans_cols   ptc
+        from Per_trans_cols   ptc  
         left outer join all_cons_columns acc on p_src_prefix||'_'||ptc.owner = acc.owner and ptc.table_name = acc.table_name and ptc.column_name = acc.column_name
         left outer join all_constraints ac on ac.constraint_name = acc.constraint_name
        where ptc.transform <> 'NONE' and acc.column_name is not null;
@@ -2002,17 +2110,17 @@ procedure load_per_trans_cols(p_obfus_run_id number, p_src_prefix varchar2, p_tg
   is
       select ptc.owner, ptc.table_name, ptc.column_name, aic.index_owner, aic.index_name,
              dbms_lob.substr(dbms_metadata.get_ddl('INDEX',aic.index_name,aic.index_owner),4000,1) index_ddl
-        from Per_trans_cols   ptc
+        from Per_trans_cols   ptc  
         left outer join all_ind_columns  aic on p_src_prefix||'_'||ptc.owner = aic.index_owner and ptc.table_name = aic.table_name and ptc.column_name = aic.column_name
        where ptc.transform <> 'NONE'  and aic.column_name is not null;
 
  begin
+ 
 
-
-    delete Per_trans_col_ind;
+    delete Per_trans_col_ind;  
     delete Per_trans_col_con;
     delete Per_trans_cols;
-
+  
       -- Load Audit table transformations
 
        insert into  Per_trans_cols (obfus_run_id ,owner , table_name, column_name, trans_func,transform,column_id,
@@ -2068,7 +2176,7 @@ procedure load_per_trans_cols(p_obfus_run_id number, p_src_prefix varchar2, p_tg
              select atc.owner,atc.table_name,column_name
              from (select distinct p_src_prefix||'_AUDIT' tgt_owner,'A_'||table_name table_name from pc_transform_2
                    union
-                   select distinct p_src_prefix||'_AUDIT' owner,pcmo.table_name table_name from per_col_mask_overide pcmo
+                   select distinct p_src_prefix||'_AUDIT' owner,pcmo.table_name table_name from per_col_mask_overide pcmo  
                    where pcmo.table_type = const.k_PER_TABLE_AUD_TYPE
                 ) pc2
              join all_tab_columns atc on atc.owner = pc2.tgt_owner and  atc.table_name = pc2.table_name
@@ -2222,7 +2330,7 @@ procedure load_per_trans_cols(p_obfus_run_id number, p_src_prefix varchar2, p_tg
       )
     ) res
     join all_tab_columns  atc on res.tgt_owner =  atc.owner and  res.tgt_table_name = atc.table_name and res.tgt_column_name = atc.column_name;
-
+    
 
   begin
     for r in c_Per_trans_col_ind
@@ -2230,31 +2338,31 @@ procedure load_per_trans_cols(p_obfus_run_id number, p_src_prefix varchar2, p_tg
       begin
         insert into Per_trans_col_ind (obfus_run_id,owner, table_name, column_name, index_owner, index_name, index_ddl)
         values (p_obfus_run_id,r.owner, r.table_name, r.column_name, r.index_owner, r.index_name,r.index_ddl);
-
+      
       exception
         when dup_val_on_index then
           v_code := SQLCODE;
           v_errm := SUBSTR(SQLERRM,1,4000);
-          ut.log(const.k_subsys_obfus,'Index ' ||r.index_name|| ' already exists.',v_code,v_errm,const_module);
+          obfuscation_control.obfus_log('Index ' ||r.index_name|| ' already exists.',p_src_prefix,p_anon_version,p_tgt_prefix,v_code,v_errm,const_module);
       end;
-    end loop;
-  end;
-
+    end loop;  
+  end;  
+  
   begin
     for r in c_Per_trans_col_con
     loop
       begin
-        insert into Per_trans_col_con ( obfus_run_id,owner, table_name, column_name, constraint_owner, constraint_name,
-                                        constraint_type, r_owner, r_constraint_name, constraint_ddl )
-        values (p_obfus_run_id,r.owner, r.table_name, r.column_name, r.constraint_owner, r.constraint_name,
+        insert into Per_trans_col_con ( obfus_run_id,owner, table_name, column_name, constraint_owner, constraint_name, 
+                                        constraint_type, r_owner, r_constraint_name, constraint_ddl )  
+        values (p_obfus_run_id,r.owner, r.table_name, r.column_name, r.constraint_owner, r.constraint_name, 
                 r.constraint_type, r.r_owner, r.r_constraint_name,r.constraint_ddl);
       exception
         when dup_val_on_index then
           v_code := SQLCODE;
           v_errm := SUBSTR(SQLERRM,1,4000);
-          ut.log(const.k_subsys_obfus,'Constraint ' ||r.constraint_name|| ' already exists.',v_code,v_errm,const_module);
-      end;
-    end loop;
+          obfuscation_control.obfus_log('Constraint ' ||r.constraint_name|| ' already exists.',p_src_prefix,p_anon_version,p_tgt_prefix,v_code,v_errm,const_module);
+      end;                
+    end loop;    
   end;
   merge into peripheral_tables pt
   using ( select owner,table_name, count(*) num_masked_cols
@@ -2265,14 +2373,14 @@ procedure load_per_trans_cols(p_obfus_run_id number, p_src_prefix varchar2, p_tg
   when matched then
     update set pt.num_masked_cols = res.num_masked_cols;
 
-  update peripheral_tables pt set use_fast_mask = use_fast_mask(pt.owner,pt.table_name,p_src_prefix,p_anon_version,p_tgt_prefix);
+  update peripheral_tables pt set use_fast_mask = use_fast_mask(pt.owner,pt.table_name,p_src_prefix,p_anon_version,p_tgt_prefix);													   
 
   commit;
-
+  
   exception when others then
     v_code := SQLCODE;
     v_errm := SUBSTR(SQLERRM,1,4000);
-    ut.log(const.k_subsys_obfus,'Error: ' ||'Unexpected',v_code,v_errm,const_module);
+    obfuscation_control.obfus_log('Error: ' ||'Unexpected',p_src_prefix,p_anon_version,p_tgt_prefix,v_code,v_errm,const_module);
     raise;
 end load_per_trans_cols;
 
@@ -2281,42 +2389,22 @@ function use_fast_mask (p_owner varchar2, p_table_name varchar2,p_src_prefix var
   v_use_fast_mask varchar2(1);
   const_module      CONSTANT  varchar2(62) := 'obfuscation_control.use_fast_mask';
   v_code       number;
-  v_errm       varchar2(4000);
-
+  v_errm       varchar2(4000); 
+  
 begin
 
-  v_use_fast_mask := 'Y';
+  select case when num_rows > gp.col_mask_row_threshold then 'Y' else 'N' end
+  into v_use_fast_mask
+  from dd_tab_statistics
+  where owner = p_owner and table_name = p_table_name;
 
-  begin
-    select 'N'
-    into v_use_fast_mask
-    from suppress_fast_mask
-    where owner = p_owner and table_name = p_table_name;
-  
-    exception when others then
-      v_use_fast_mask := 'Y';
-  end ;
-
-  if v_use_fast_mask <> 'N' then
-    begin
-      select case when num_rows > gp.col_mask_row_threshold then 'Y' else 'N' end
-      into v_use_fast_mask
-      from dd_tab_stats
-      where owner = p_owner and table_name = p_table_name;
-      
-      exception when others then
-          v_use_fast_mask := 'Y';
-    end;
-  end if;  
-  
   return v_use_fast_mask;
   
   exception when others then
-  v_code := SQLCODE;
-  v_errm := SUBSTR(SQLERRM,1,4000);
-  ut.log(const.k_subsys_obfus,'Error: ' ||'Unexpected',v_code,v_errm,const_module);
-  raise;
-
+    v_code := SQLCODE;
+    v_errm := SUBSTR(SQLERRM,1,4000);
+    obfuscation_control.obfus_log('Error: ' ||'Unexpected',p_src_prefix,p_anon_version,p_tgt_prefix,v_code,v_errm,const_module);
+    raise;
 end use_fast_mask;
 
 
@@ -2326,6 +2414,10 @@ AS
   v_nStep number;
   v_nOrder number;
   v_nStageOffset number;
+  
+  
+
+
 
       cursor genPerObfusCtrlStmts (p_obfus_run_id number,p_Step number) is select res.owner,res.table_name,col_group,
       listagg(res.column_name, ', ') within group (order by res.column_id) as acutal_cols ,
@@ -2370,8 +2462,8 @@ AS
   v_current_stage_step_code    obfus_ctrl_stmts.stage_step_code%TYPE;
   v_current_dependent_ss_code  obfus_ctrl_stmts.dependent_ss_code%TYPE;
   v_current_owner              obfus_ctrl_stmts.owner%TYPE;
-  v_current_table_name         obfus_ctrl_stmts.table_name%TYPE;
-  bln_stmt_inserted            BOOLEAN := FALSE;
+  v_current_table_name         obfus_ctrl_stmts.table_name%TYPE; 
+  bln_stmt_inserted            BOOLEAN := FALSE; 
   v_counter                    number  := 0;
 
   const_module  CONSTANT  varchar2(62) := 'obfuscation_control.load_per_stages';
@@ -2382,8 +2474,8 @@ begin
   delete from obfus_ctrl_stmts where obfus_run_id = p_obfus_run_id and stage_step_code like 'P%';
 
   --PERIFERAL TABLE PROCESSING
-
-
+  
+  
 --    -- FAST MASK ENTITITIES
     v_nStageOffset := 0;
     v_nStep := 1;
@@ -2402,13 +2494,13 @@ begin
       select  owner,table_name,'anonymisation_process.apply_fast_mask('''||owner||''','''||table_name||''')'  stmt
       from
       (
-        select  distinct ptc.owner,ptc.table_name
+        select  distinct ptc.owner,ptc.table_name 
         from Per_trans_cols  ptc
         join peripheral_tables pt on pt.owner = ptc.owner and pt.table_name = ptc.table_name
         where ptc.obfus_run_id = p_obfus_run_id and pt.use_fast_mask = 'Y'
       ) res
     );
-
+    
     v_nStep := 2;
     v_nOrder := 1;
 
@@ -2425,7 +2517,7 @@ begin
       select   owner,table_name,p_run_env||'.'||'anonymisation_process.per_col_masking_exceptions('''||owner||''','''||table_name||''','''|| 'TGT' ||''')'  stmt
       from
       (
-        select  distinct ptc.owner,ptc.table_name
+        select  distinct ptc.owner,ptc.table_name 
         from Per_trans_cols  ptc
         join peripheral_tables pt on pt.owner = ptc.owner and pt.table_name = ptc.table_name
         where ptc.obfus_run_id = p_obfus_run_id and pt.use_fast_mask = 'Y'
@@ -2433,20 +2525,20 @@ begin
     );
 
     commit;
-
+    
     -- NON FAST MASK ENTITITIES
     v_nStep := 1;
     v_nOrder := 1;
-
-
-    select max(to_number(substr(stage_step_code,2,const.k_STAGE_CODE_SIZE)))
+    
+    
+    select max(to_number(substr(stage_step_code,2,const.k_STAGE_CODE_SIZE))) 
     into   v_nStageOffset
-    from obfus_ctrl_stmts
+    from obfus_ctrl_stmts 
     where obfus_run_id =  p_obfus_run_id
     and substr(stage_step_code,1,1) = 'P' ;
-
-    ut.log(const.k_subsys_obfus,'Processing NON FAST MASK ENTITITIES using v_nStageOffset: '||to_char(v_nStageOffset),null,null,const_module);
-
+    
+    obfuscation_control.obfus_log('Processing NON FAST MASK ENTITITIES using v_nStageOffset: '||to_char(v_nStageOffset),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+																															
 
     insert into obfus_ctrl_stmts  (obfus_run_id,stage_step_code,dependent_ss_code,step_type,stmt_seq,owner,table_name,stmt)
     select p_obfus_run_id as obfus_run_id,
@@ -2467,39 +2559,40 @@ begin
       ) res
     );
 
-    ut.log(const.k_subsys_obfus,'Inserted: '||to_char(sql%rowcount) || ' drop S_STG table statments',null,null,const_module);
+    obfuscation_control.obfus_log('Inserted: '||to_char(sql%rowcount) || ' drop S_STG table statments',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
 
 
    v_nStep := 2;
    v_nOrder := 1;
    v_counter := 0;
 
-    ut.log(const.k_subsys_obfus,'Opening genPerObfusCtrlStmts2 cursor for CREATE S_STG_ table statements, with obfus_run_id: '||to_char(p_obfus_run_id) || ' for v_nStep ' || to_char(v_nStep),null,null,const_module);
+    obfuscation_control.obfus_log('Opening genPerObfusCtrlStmts2 cursor for CREATE S_STG_ table statements, with obfus_run_id: '||to_char(p_obfus_run_id) || ' for v_nStep ' || to_char(v_nStep),gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
     for genPerObfusCtrlStmts2Rec in genPerObfusCtrlStmts2(p_obfus_run_id,v_nStep) loop
-
+         
       if v_counter = 0
       then
-         ut.log(const.k_subsys_obfus,'Initialising v_current_stage_step_code to : '||genPerObfusCtrlStmts2Rec.stage_step_code,null,null,const_module);
+         obfuscation_control.obfus_log('Initialising v_current_stage_step_code to : '||genPerObfusCtrlStmts2Rec.stage_step_code,gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
          v_current_stage_step_code := genPerObfusCtrlStmts2Rec.stage_step_code;
          v_counter := v_counter + 1;
       end if;
-
+      
       if genPerObfusCtrlStmts2Rec.stage_step_code <> v_current_stage_step_code
-      then
-
+      then 
+      
         -- exception case where fewer than 5 col groups ('SIP_CASH_RECON_TEMP')
-         if not bln_stmt_inserted
+         if not bln_stmt_inserted 
          then
-            ut.log(const.k_subsys_obfus,'Inserting obfus_ctrl_stmts for: ' || v_current_table_name ||
-                                          ' for stage_step_code: ' || v_current_stage_step_code,null,null,const_module);
-
+            obfuscation_control.obfus_log('Inserting obfus_ctrl_stmts for: ' || v_current_table_name ||
+                                          ' for stage_step_code: ' || v_current_stage_step_code,
+                                           gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+         
             insert into obfus_ctrl_stmts  (obfus_run_id,stage_step_code,dependent_ss_code,step_type,stmt_seq,owner,table_name,stmt,stmt_overflow,stmt_overflow2,stmt_overflow3,stmt_overflow4,stmt_overflow5,stmt_overflow6,stmt_overflow7)
             values (p_obfus_run_id, v_current_stage_step_code, v_current_dependent_ss_code,'S' ,to_char(v_nOrder),
                     v_current_owner,v_current_table_name,v_sStmt1,v_sStmt2,v_sStmt3,v_sStmt4,v_sStmt5,v_sStmt6,null,null);
          end if;
-
+         
          -- reset for next stage_step_code
-         bln_stmt_inserted := FALSE;
+         bln_stmt_inserted := FALSE;         
       end if;
 
       if genPerObfusCtrlStmts2Rec.col_group = 0 then
@@ -2554,7 +2647,7 @@ begin
       select owner,table_name ,'CREATE OR REPLACE SYNONYM '||p_run_env||'.'||const.k_REP_TGT_SYN_PREFIX||'_'||res1.table_name || ' FOR '||p_tgt_prefix||'_'||res1.owner||'.'||res1.table_name stmt
       from
       (
-          select  distinct ptc.owner,ptc.table_name
+          select  distinct ptc.owner,ptc.table_name 
           from Per_trans_cols ptc
           join peripheral_tables pt on pt.owner = ptc.owner and pt.table_name = ptc.table_name
           where obfus_run_id = p_obfus_run_id and pt.use_fast_mask = 'N'
@@ -2629,7 +2722,7 @@ begin
       select  owner,table_name,'ut.rebuild_indexes('''||p_tgt_prefix||'_'||owner||''','''||table_name||''')'  stmt
       from
       (
-        select  distinct ptc.owner,ptc.table_name
+        select  distinct ptc.owner,ptc.table_name 
         from Per_trans_cols  ptc
         join peripheral_tables pt on pt.owner = ptc.owner and pt.table_name = ptc.table_name
         where ptc.obfus_run_id = p_obfus_run_id and pt.use_fast_mask = 'N'
@@ -2679,7 +2772,7 @@ begin
       select   owner,table_name,'DROP TABLE ' ||p_run_env||'.'|| 'S_STG_'||res.table_name  stmt
       from
       (
-        select  distinct ptc.owner,ptc.table_name
+        select  distinct ptc.owner,ptc.table_name 
         from Per_trans_cols  ptc
         join peripheral_tables pt on pt.owner = ptc.owner and pt.table_name = ptc.table_name
         where ptc.obfus_run_id = p_obfus_run_id and pt.use_fast_mask = 'N'
@@ -2702,7 +2795,7 @@ begin
       select   owner,table_name,p_run_env||'.'||'anonymisation_process.per_col_masking_exceptions('''||owner||''','''||table_name||''','''|| 'TGT'||''')'  stmt
       from
       (
-        select  distinct ptc.owner,ptc.table_name
+        select  distinct ptc.owner,ptc.table_name 
         from Per_trans_cols  ptc
         join peripheral_tables pt on pt.owner = ptc.owner and pt.table_name = ptc.table_name
         where ptc.obfus_run_id = p_obfus_run_id and pt.use_fast_mask = 'N'
@@ -2719,12 +2812,12 @@ end load_per_stages;
     const_module      CONSTANT  varchar2(62) := 'obfuscation_control.load_stats_stmts';
     v_ddl varchar2(4000);
  begin
-
-    ut.log(const.k_subsys_obfus,'truncating tables tmp_tab_pk, tmp_pc_tab_pk, stats_stmts'||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),null,null,const_module);
+ 
+    obfuscation_control.obfus_log('truncating tables tmp_tab_pk, tmp_pc_tab_pk, stats_stmts'||to_char(sysdate,'dd-mm-yyyy hh24.mi.ss'),p_src_prefix,p_anon_version,p_tgt_prefix,null,null,const_module);
     execute immediate 'truncate table stats_stmts';
     execute immediate 'truncate table tmp_tab_pk';
     execute immediate 'truncate table tmp_pc_tab_pk';
-
+ 
     insert into tmp_tab_pk ( owner, table_name, pkcols, pkjoin )
       select ac.owner,ac.table_name,
              listagg(acc.column_name,',') within group (ORDER BY column_name) as pkcols,
@@ -2734,31 +2827,31 @@ end load_per_stages;
        where ac.constraint_type = 'P' and  ac.owner like p_src_prefix||'\_%' escape '\'
       group by ac.owner,ac.table_name;
 
-    ut.log(const.k_subsys_obfus,sql%rowcount || ' rows inserted into tmp_tab_pk',null,null,const_module);
-
+    obfuscation_control.obfus_log(sql%rowcount || ' rows inserted into tmp_tab_pk',p_src_prefix,p_anon_version,p_tgt_prefix,null,null,const_module);
+    
     update tmp_tab_pk
        set leading_pkcol = nvl(substr(pkcols,1,instr(pkcols,',')-1),pkcols);
-
-    ut.log(const.k_subsys_obfus,sql%rowcount || ' tmp_tab_pk rows updated',null,null,const_module);
-
-    insert into tmp_pc_tab_pk
+ 
+    obfuscation_control.obfus_log(sql%rowcount || ' tmp_tab_pk rows updated',p_src_prefix,p_anon_version,p_tgt_prefix,null,null,const_module); 
+   
+    insert into tmp_pc_tab_pk     
       select
          distinct pt.owner, pt.table_name, pt.column_name, pt.technique,
                   pt.trans_function, pt.stereo_type, pk.pkcols, pk.leading_pkcol, pk.pkjoin
-             from pc_transform pt
+             from pc_transform pt 
              join TMP_TAB_PK pk on pk.table_name = pt.table_name
-              and pk.owner = p_src_prefix ||'_'|| pt.owner;
+              and pk.owner = p_src_prefix ||'_'|| pt.owner;   
 
-    ut.log(const.k_subsys_obfus,sql%rowcount || ' rows inserted into tmp_pc_tab_pk',null,null,const_module);
-
+    obfuscation_control.obfus_log(sql%rowcount || ' rows inserted into tmp_pc_tab_pk',p_src_prefix,p_anon_version,p_tgt_prefix,null,null,const_module);
+    
     insert into stats_stmts (owner,table_name,column_name,technique,trans_function,stereo_type,stmt)
-       select t.owner, t.table_name, t.column_name, t.technique, t.trans_function, t.stereo_type,
-     ' select sum(ne)                 not_equals,
-              sum(eq)                 equals,
-              sum(value_to_null)      value_to_null,
-              sum(value_from_null)    value_from_null,
-              round(avg(dist_sim),2)  avg_sim_dist,
-              sum(src_rec)            total_recs_src,
+       select t.owner, t.table_name, t.column_name, t.technique, t.trans_function, t.stereo_type,     
+     ' select sum(ne)                 not_equals, 
+              sum(eq)                 equals, 
+              sum(value_to_null)      value_to_null, 
+              sum(value_from_null)    value_from_null, 
+              round(avg(dist_sim),2)  avg_sim_dist, 
+              sum(src_rec)            total_recs_src, 
               sum(tgt_rec)            total_recs_tgt,
               sum(null_src)           total_nulls_src,
               sum(null_tgt)           total_nulls_tgt
@@ -2769,15 +2862,15 @@ end load_per_stages;
                      case when x.' ||t.column_name || ' = y.' ||t.column_name || '
                           then 1 else 0
                      end  AS eq,
-                     case when x.' ||t.column_name || ' is not null and y.' ||t.column_name || ' is null
+                     case when x.' ||t.column_name || ' is not null and y.' ||t.column_name || ' is null 
                           then 1 else 0
-                     end  AS value_to_null,
-                     case when x.' ||t.column_name || ' is null and y.' ||t.column_name || ' is not null
+                     end  AS value_to_null, 
+                     case when x.' ||t.column_name || ' is null and y.' ||t.column_name || ' is not null  
                           then 1 else 0
-                     end  AS value_from_null,
-                     case when x.' ||t.column_name || ' is not null and y.' ||t.column_name || ' is not null
-                          then
-                            utl_match.EDIT_DISTANCE_SIMILARITY(substr(x.' ||t.column_name || ',1,20) , substr(y.' ||t.column_name||',1,20))
+                     end  AS value_from_null, 
+                     case when x.' ||t.column_name || ' is not null and y.' ||t.column_name || ' is not null                    
+                          then 
+                            utl_match.EDIT_DISTANCE_SIMILARITY(substr(x.' ||t.column_name || ',1,20) , substr(y.' ||t.column_name||',1,20)) 
                           else
                             null
                      end AS dist_sim,
@@ -2785,21 +2878,193 @@ end load_per_stages;
                      1 AS tgt_rec,
                      case when x.' ||t.column_name || ' is null
                           then 1 else 0
-                     end  AS null_src,
+                     end  AS null_src,      
                      case when y.' ||t.column_name || ' is null
                           then 1 else 0
-                     end  AS null_tgt
-                    from ' || p_src_rep_syn_prefix ||'_'|| t.table_name || ' x
+                     end  AS null_tgt                  
+                    from ' || p_src_rep_syn_prefix ||'_'|| t.table_name || ' x 
                     full outer join ' || p_tgt_rep_syn_prefix || '_' || t.table_name || ' y on ' || t.pkjoin || ')'
      from tmp_pc_tab_pk t;
 
-     ut.log(const.k_subsys_obfus,sql%rowcount || ' rows inserted into stats_stmts',null,null,const_module);
-
+     obfuscation_control.obfus_log(sql%rowcount || ' rows inserted into stats_stmts',p_src_prefix,p_anon_version,p_tgt_prefix,null,null,const_module);
+ 
      update_obfus_control(p_obfus_run_id, p_src_prefix, p_tgt_prefix, p_run_env, p_anon_version, p_stats_stmts_loaded => 'Y');
      commit;
 
  end load_stats_stmts;
 
+
+ procedure load_dd_stats as
+
+  start_time date;
+  end_time date;
+
+  const_module      CONSTANT  varchar2(62) := 'obfuscation_control.load_dd_stats';
+  v_code           number;
+  v_errm           varchar2(4000);
+
+  v_obfus_run_id    obfus_control.obfus_run_id%TYPE := null;
+
+  begin
+  
+    obfuscation_control.obfus_log('truncating tables dd_tab_columns, dd_tab_statistics and dd_tab_col_statistics',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);   
+    execute immediate 'truncate table dd_tab_columns';  
+    execute immediate 'truncate table dd_tab_statistics';
+    execute immediate 'truncate table dd_tab_col_statistics';
+
+    insert into dd_tab_columns( actual_owner,owner, table_name,column_name,data_type,data_type_mod,
+                data_type_owner,data_length,data_precision,data_scale,nullable,column_id,default_length,num_distinct,       
+                density,num_nulls,num_buckets,last_analyzed,sample_size,character_set_name,  
+                char_col_decl_length,global_stats,user_stats,avg_col_len,char_length)
+    select owner actual_owner,replace(owner,gp.src_prefix||'_',null) owner, table_name,column_name,data_type,data_type_mod,
+           data_type_owner,data_length,data_precision,data_scale,nullable,column_id,default_length,num_distinct,       
+           density,num_nulls,num_buckets,last_analyzed,sample_size,character_set_name,  
+           char_col_decl_length,global_stats,user_stats,avg_col_len,char_length 
+      from all_tab_columns
+     where owner like gp.src_prefix||'\_%' escape '\';
+
+    obfuscation_control.obfus_log(to_char(sql%rowcount) || ' rows inserted into dd_tab_columns',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+
+
+    insert into dd_tab_statistics(owner,actual_owner,table_name,partition_name,partition_position,subpartition_name,
+                subpartition_position,object_type,num_rows,blocks,empty_blocks,avg_space,chain_cnt,avg_row_len,
+                avg_space_freelist_blocks,num_freelist_blocks,avg_cached_blocks,avg_cache_hit_ratio,im_imcu_count,
+                im_block_count,im_stat_update_time,scan_rate,sample_size,last_analyzed,global_stats,user_stats,
+                stattype_locked,stale_stats,scope)
+     select  replace(owner,gp.src_prefix||'_',null) owner,owner actual_owner,	table_name,partition_name,
+                partition_position,subpartition_name,subpartition_position,object_type,num_rows,blocks,
+                empty_blocks,avg_space,chain_cnt,avg_row_len,avg_space_freelist_blocks,num_freelist_blocks,
+                avg_cached_blocks,avg_cache_hit_ratio,im_imcu_count,im_block_count,
+                im_stat_update_time,scan_rate,sample_size,last_analyzed,global_stats,
+                user_stats,stattype_locked,stale_stats,scope  
+      from all_tab_statistics
+     where owner like gp.src_prefix||'\_%' escape '\'
+       and object_type = 'TABLE';
+
+    obfuscation_control.obfus_log(to_char(sql%rowcount) || ' rows inserted into dd_tab_statistics',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);     
+                
+    insert into  dd_tab_col_statistics( owner,  actual_owner,table_name,column_name,num_distinct,low_value,high_value,density , 	
+                 num_nulls,num_buckets,last_analyzed,sample_size,global_stats,user_stats,notes,avg_col_len,histogram ,scope )
+    select replace(owner,gp.src_prefix||'_',null)  owner,owner actual_owner,table_name,column_name,num_distinct,low_value,high_value,density,num_nulls,num_buckets,
+           last_analyzed,sample_size,global_stats,user_stats,notes,avg_col_len,histogram,scope 
+      from all_tab_col_statistics
+     where owner like gp.src_prefix||'\_%' escape '\';
+
+    obfuscation_control.obfus_log(to_char(sql%rowcount) || ' rows inserted into dd_tab_col_statistics',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+     
+    commit;
+
+ exception
+    when others then
+       v_code := SQLCODE;
+       v_errm := SUBSTR(SQLERRM,1,4000);
+       obfus_log(substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
+       obfuscation_control.update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_dd_loaded => 'FAILED');
+    
+ end load_dd_stats;
+
+ procedure load_dd as
+
+  start_time date;
+  end_time date;
+
+  const_module      CONSTANT  varchar2(62) := 'obfuscation_control.load_dd';
+  v_code           number;
+  v_errm           varchar2(4000);
+
+  v_obfus_run_id    obfus_control.obfus_run_id%TYPE := null;
+
+  begin
+  
+    obfuscation_control.obfus_log('truncating  dd_* tables',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);     
+    execute immediate 'truncate table dd_tables';
+    execute immediate 'truncate table dd_tab_columns';
+    execute immediate 'truncate table dd_tab_statistics';
+    execute immediate 'truncate table dd_tab_col_statistics';
+    execute immediate 'truncate table dd_constraints';
+    execute immediate 'truncate table dd_cons_columns';
+    execute immediate 'truncate table dd_ind_columns';
+    --execute immediate 'truncate table dd_synonyms';
+    --execute immediate 'truncate table dd_triggers';
+    
+    v_obfus_run_id := obfuscation_control.fn_existing_obfus_run_id(gp.src_prefix,gp.run_env,gp.tgt_prefix,null);
+    begin
+    
+    insert into dd_tables (actual_owner, owner, table_name,tablespace_name,temporary,num_rows,iot_type) 
+      select owner actual_owner, replace(owner,gp.src_prefix||'_',null) owner, table_name,tablespace_name,temporary,num_rows,iot_type
+        from all_tables 
+       where owner like gp.src_prefix||'\_%' escape '\';
+
+    obfuscation_control.obfus_log(to_char(sql%rowcount) || ' rows inserted into dd_tables',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+        
+    load_dd_stats;
+    
+    insert into dd_constraints (
+       actual_owner,owner,constraint_name,constraint_type,table_name,
+       actual_r_owner, r_owner,r_constraint_name,
+       actual_index_owner,index_owner,index_name    
+    ) 
+    select owner actual_owner, replace(owner,gp.src_prefix||'_',null) owner, constraint_name,constraint_type,table_name,
+           r_owner actual_r_owner, replace(r_owner,gp.src_prefix||'_',null) r_owner, r_constraint_name, 
+           index_owner actual_index_owner, replace(index_owner,gp.src_prefix||'_',null) index_owner,index_name 
+      from all_constraints 
+     where owner like gp.src_prefix||'\_%' escape '\';
+
+    obfuscation_control.obfus_log(to_char(sql%rowcount) || ' rows inserted into dd_constraints',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+
+    insert into dd_cons_columns (
+       actual_owner,owner,constraint_name,table_name,column_name,position
+    )
+    select owner actual_owner, replace(owner,gp.src_prefix||'_',null) owner, constraint_name, table_name, column_name, position
+      from all_cons_columns 
+     where owner like gp.src_prefix||'\_%' escape '\';
+
+    obfuscation_control.obfus_log(to_char(sql%rowcount) || ' rows inserted into dd_cons_columns',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+
+    insert into dd_ind_columns (
+       actual_index_owner,index_owner,index_name,
+       actual_table_owner,table_owner,table_name,
+       column_name,column_position,column_length,char_length
+    ) 
+    select index_owner actual_index_owner, replace(index_owner,gp.src_prefix||'_',null) index_owner, index_name,  
+           table_owner actual_table_owner, replace(table_owner,gp.src_prefix||'_',null) table_owner, table_name, 
+           column_name, column_position, column_length, char_length
+      from all_ind_columns 
+     where index_owner like gp.src_prefix||'\_%' escape '\'; 
+
+    obfuscation_control.obfus_log(to_char(sql%rowcount) || ' rows inserted into dd_ind_columns',gp.src_prefix,gp.anon_version,gp.tgt_prefix,null,null,const_module);
+
+--    insert into dd_synonyms (
+--       actual_owner,owner,synonym_name,
+--       actual_table_owner,table_owner,table_name    
+--    )
+--    select owner actual_owner, replace(owner,gp.src_prefix||'_',null) owner, synonym_name, 
+--           table_owner actual_table_owner, replace(table_owner,gp.src_prefix||'_',null) table_owner, table_name
+--      from all_synonyms 
+--     where owner like gp.src_prefix||'\_%' escape '\'; 
+
+--    insert into dd_triggers (
+--       actual_owner,owner,trigger_name,trigger_type,triggering_event,
+--       actual_table_owner,table_owner,table_name,column_name,status
+--    )
+--    select owner actual_owner, replace(owner,gp.src_prefix||'_',null) owner, trigger_name, trigger_type, triggering_event, 
+--           table_owner actual_table_owner, replace(table_owner,gp.src_prefix||'_',null) table_owner, table_name, column_name, status
+--      from all_triggers 
+--     where owner like gp.src_prefix||'\_%' escape '\';
+
+    update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_dd_loaded => 'Y');
+    
+    commit;
+
+
+    exception
+       when others then
+          v_code := SQLCODE;
+          v_errm := SUBSTR(SQLERRM,1,4000);
+          obfus_log(substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
+          obfuscation_control.update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_dd_loaded => 'FAILED');
+    end;
+end load_dd;
 
  procedure load_pc_transform as
 
@@ -2832,10 +3097,10 @@ end load_per_stages;
 
     v_obfus_run_id := obfuscation_control.fn_existing_obfus_run_id(gp.src_prefix,gp.run_env,gp.tgt_prefix,null);
     begin
-
+ 										  
       execute immediate ('truncate table pc_transform_2');
 
-      for pc_rec in (
+      for pc_rec in (               
                       select owner,table_name,column_name,trans_function,execution_prior,technique,char_length,data_type,
                       no_trans_funcs,no_distinct_trans_funcs,stereo_type ,
                       case when (sum (case when trans_function= 'ut.MAN' or trans_function= 'ut.EXCLUDE' then 0 else 1 end) over  (partition by  owner,table_name)) = 0 then 'Y' else 'N' end manual_only
@@ -2874,85 +3139,86 @@ end load_per_stages;
        when others then
           v_code := SQLCODE;
           v_errm := SUBSTR(SQLERRM,1,4000);
-          ut.log(const.k_subsys_obfus, substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),v_code,v_errm,const_module);
+          obfus_log(substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),gp.src_prefix,gp.anon_version,gp.tgt_prefix,v_code,v_errm,const_module);
           obfuscation_control.update_obfus_control(v_obfus_run_id, gp.src_prefix, gp.tgt_prefix, gp.run_env, gp.anon_version, p_obfus_status => 'FAILED');
     end;
 end load_pc_transform;
 
 function check_stages(p_obfus_run_id number, p_src_prefix varchar2, p_tgt_prefix varchar2, p_run_env varchar2, p_anon_version varchar2,p_stage_tab out string_list_257,p_msg_tab out string_list_4000) return varchar2 is
 
-  cursor getViolations is
+  cursor getViolations is 
   select distinct owner,table_name,stage
   from
   (
-     select owner,table_name,substr(stage_step_code,1,5) stage,
+     select owner,table_name,substr(stage_step_code,1,5) stage, 
             count(distinct table_name) over (partition by substr(stage_step_code,1,5)) no_tables
        from obfus_ctrl_stmts
-      where obfus_run_id = gp.obfus_run_id      
+      where obfus_run_id = gp.obfus_run_id
+      
   ) where no_tables > 1;
-
+  
   i number;
-
+  
   const_module      CONSTANT  varchar2(62) := 'obfuscation_control.check_stages';
   v_code       number;
-  v_errm       varchar2(4000);
-
+  v_errm       varchar2(4000); 
+  
   begin
     i:= 1;
     for getViolationsRec in getViolations loop
       p_stage_tab(i) := getViolationsRec.owner||'.'||getViolationsRec.table_name;
       p_msg_tab(i) :=   'Stage ('||getViolationsRec.stage ||') is in violation of integrity rule ('||const.k_SINGLE_ENTITY_STAGE_CHECK ||').';
       i:= i + 1;
-
+      
     end loop;
-
+    
     if i > 1 then
-        return  const.k_Fail;
+        return  const.k_Fail; 
     else
-        Return  const.k_Pass;
+        Return  const.k_Pass; 
     end if;
-
+    
     exception
        when others then
           v_code := SQLCODE;
           v_errm := SUBSTR(SQLERRM,1,4000);
-          ut.log(const.k_subsys_obfus, substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),v_code,v_errm,const_module);
+          obfus_log(substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),p_src_prefix,p_anon_version,p_tgt_prefix,v_code,v_errm,const_module);
           obfuscation_control.update_obfus_control(p_obfus_run_id, p_src_prefix, p_tgt_prefix, p_run_env, p_anon_version, p_obfus_status => 'FAILED');
-          return  const.k_Fail;
-  end check_stages;
+          return  const.k_Fail; 
+  end check_stages;					  
 
 procedure execution_report(p_obfus_run_id number, p_src_prefix varchar2, p_tgt_prefix varchar2, p_run_env varchar2, p_anon_version varchar2)  is
-
+  
   const_module      CONSTANT  varchar2(62) := 'obfuscation_control.execution_report';
   v_code       number;
-  v_errm       varchar2(4000);
-
+  v_errm       varchar2(4000); 
+  
   begin
-
+  
     delete from execution_report where obfus_run_id = p_obfus_run_id;
-
-    insert into execution_report(obfus_run_id,stage_step_code,owner,table_name,stmt_seq,execution_id,start_timestamp,end_timestamp,duration_seconds,status,log_msg)
-
-    select ocer.obfus_run_id,ocer.stage_step_code,ocs.owner,ocs.table_name,ocer.stmt_seq,ocer.execution_id ,
-    ocer.start_timestamp,ocer.end_timestamp,ocer.duration_seconds,ocer.status,ol.log_msg
+  
+    insert into execution_report(obfus_run_id,stage_step_code,owner,table_name,stmt_seq,execution_id,start_timestamp,end_timestamp,duration_seconds,status,log_msg) 
+    
+    select ocer.obfus_run_id,ocer.stage_step_code,ocs.owner,ocs.table_name,ocer.stmt_seq,ocer.execution_id ,         
+    ocer.start_timestamp,ocer.end_timestamp,ocer.duration_seconds,ocer.status,ol.log_msg          
     from  obfus_control_exec_result ocer
     join obfus_ctrl_stmts ocs on ocs.stage_step_code = ocer.stage_step_code and ocs.obfus_run_id = ocer.obfus_run_id and ocs.stmt_seq = ocer.stmt_seq
     left outer join  obfuscation_log ol on ol.log_id = ocer.obfus_log_id
     where (ocer.obfus_run_id,ocer.stage_step_code, ocer.execution_id,ocer.stmt_seq) in
     (
-      select obfus_run_id,stage_step_code,max(execution_id) over (partition by stage_step_code) execution_id,stmt_seq
+      select obfus_run_id,stage_step_code,max(execution_id) over (partition by stage_step_code) execution_id,stmt_seq 
       from obfus_control_exec_result
       where obfus_run_id = p_obfus_run_id
-    )
+    ) 
     order by translate(ocer.stage_step_code,const.k_Stmt_Order_Chr,const.k_Stmt_Order_Num),ocer.stmt_seq;
-
+  
     commit;
-
+  
     exception
        when others then
           v_code := SQLCODE;
           v_errm := SUBSTR(SQLERRM,1,4000);
-          ut.log(const.k_subsys_obfus, substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),v_code,v_errm,const_module);
+          obfus_log(substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE(),1,4000),p_src_prefix,p_anon_version,p_tgt_prefix,v_code,v_errm,const_module);
           obfuscation_control.update_obfus_control(p_obfus_run_id, p_src_prefix, p_tgt_prefix, p_run_env, p_anon_version, p_obfus_status => 'FAILED');
           rollback;
   end execution_report;

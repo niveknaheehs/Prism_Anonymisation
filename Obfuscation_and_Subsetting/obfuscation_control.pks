@@ -3,9 +3,18 @@ AS
 
   TYPE string_list_257 IS TABLE OF VARCHAR2(257) INDEX BY BINARY_INTEGER;
   TYPE string_list_4000 IS TABLE OF VARCHAR2(4000) INDEX BY BINARY_INTEGER;
-  
+
+  procedure switch_obfus_on_off ( p_on_off                varchar2,
+                                  p_obfus_run_id          NUMBER   DEFAULT NULL,
+                                  p_src_prefix            VARCHAR2 DEFAULT NULL,
+                                  p_tgt_prefix            VARCHAR2 DEFAULT NULL,
+                                  p_run_env               VARCHAR2 DEFAULT NULL,
+                                  p_anon_version          VARCHAR2 DEFAULT NULL );
+  function can_continue return boolean;
   procedure init_audit_events;
   procedure truncate_report_tables;
+  procedure obfus_log(p_log_msg VARCHAR2,p_src_prefix VARCHAR2,p_anon_version VARCHAR2,p_tgt_prefix VARCHAR2, p_code NUMBER,p_errm varchar2,p_module varchar2);
+  function  obfus_log(p_log_msg VARCHAR2,p_src_prefix VARCHAR2,p_anon_version VARCHAR2,p_tgt_prefix VARCHAR2, p_code NUMBER,p_errm varchar2,p_module varchar2)  return number;
   procedure merge_obfus_ctrl_exec_result( p_obfus_run_id     number,
                                           p_stage_step_code  varchar2,
                                           p_stmt_seq         number,
@@ -32,7 +41,7 @@ AS
                                   p_environ_stages_loaded VARCHAR2 DEFAULT NULL,
                                   p_auto_stages_loaded    VARCHAR2 DEFAULT NULL,
                                   p_manual_stages_loaded  VARCHAR2 DEFAULT NULL,
-                                  p_dd_loaded             VARCHAR2 DEFAULT NULL,											
+                                  p_dd_loaded             VARCHAR2 DEFAULT NULL,
                                   p_per_stages_loaded     VARCHAR2 DEFAULT NULL,
                                   p_final_stages_loaded   VARCHAR2 DEFAULT NULL,
                                   p_stats_stmts_loaded    VARCHAR2 DEFAULT NULL,
@@ -81,8 +90,10 @@ AS
   function check_stages(p_obfus_run_id number, p_src_prefix varchar2, p_tgt_prefix varchar2, p_run_env varchar2, p_anon_version varchar2,p_stage_tab out string_list_257,p_msg_tab out string_list_4000) return varchar2;
   procedure load_final_stages(p_obfus_run_id number, p_src_prefix varchar2, p_tgt_prefix varchar2, p_run_env varchar2, p_anon_version varchar2);
   procedure execution_report(p_obfus_run_id number, p_src_prefix varchar2, p_tgt_prefix varchar2, p_run_env varchar2, p_anon_version varchar2);
+  procedure load_dd_stats;
+  procedure load_dd;
   function use_fast_mask (p_owner varchar2, p_table_name varchar2,p_src_prefix varchar2,p_anon_version varchar2,p_tgt_prefix varchar2) return varchar2 ;
 
- 
+
  end obfuscation_control;
  /

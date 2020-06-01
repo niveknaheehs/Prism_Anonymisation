@@ -46,6 +46,7 @@ grant select on DBA_SCHEDULER_JOB_LOG to &&RO_USER;
 grant select on dba_tab_partitions to &&RO_USER;
 grant select on dba_part_key_columns to &&RO_USER;
 grant select on dba_ind_subpartitions to &&RO_USER;
+grant select on dba_source to &&RO_USER;
 
 GRANT ANALYZE ANY TO &&RO_USER;
 
